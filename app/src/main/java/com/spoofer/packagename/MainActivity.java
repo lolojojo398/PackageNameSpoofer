@@ -34,10 +34,9 @@ public class MainActivity extends Activity {
 
         TextView desc = new TextView(this);
         desc.setText("功能说明：\n\n"
-            + "  1. 所有应用查询都会返回已安装\n"
-            + "  2. 广告任务跳过下载，直接拉起设置\n"
-            + "  3. 拦截小米音乐广告弹窗\n"
-            + "  4. 无需额外安装浏览器\n\n"
+            + "  所有应用查询都会返回已安装\n"
+            + "  让广告任务直接跳过下载步骤\n"
+            + "  无需手动修改包名\n\n"
             + "使用方法：\n"
             + "1. 在LSPosed中启用本模块\n"
             + "2. 勾选目标应用（如音乐APP）\n"
