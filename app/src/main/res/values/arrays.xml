@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- LSPosed作用域 - 这里设置模块可以hook哪些应用 -->
+    <!-- 默认留空表示可以hook所有应用 -->
+    <string-array name="xposed_scope">
+        <!-- 如果只想hook特定应用，取消注释并添加包名 -->
+        <!-- <item>com.tencent.qqmusic</item> -->
+        <!-- <item>com.netease.cloudmusic</item> -->
+        <!-- <item>com.kugou.android</item> -->
+        <!-- <item>com.kuwo.player</item> -->
+    </string-array>
+</resources>
