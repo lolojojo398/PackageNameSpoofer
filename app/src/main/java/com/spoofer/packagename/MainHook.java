@@ -5,6 +5,7 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.app.Activity;
 import android.net.Uri;
 import android.os.Bundle;
 import java.util.ArrayList;
@@ -179,6 +180,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void hookStartActivity(ClassLoader cl, final String hostApp) {
+        // Hook Instrumentation.execStartActivity
         try {
             XposedHelpers.findAndHookMethod("android.app.Instrumentation", cl,
                 "execStartActivity",
@@ -196,7 +198,6 @@ public class MainHook implements IXposedHookLoadPackage {
                         if (intent == null) return;
                         String pkg = getTargetPackage(intent);
                         if (pkg != null && shouldSpoof(pkg, hostApp)) {
-                            // 如果应用实际已安装，放行让它正常打开
                             if (isAppReallyInstalled((android.content.Context) param.args[0], pkg)) {
                                 XposedBridge.log(TAG + "execStartActivity allow (installed): " + pkg);
                                 return;
@@ -206,9 +207,36 @@ public class MainHook implements IXposedHookLoadPackage {
                         }
                     }
                 });
-            XposedBridge.log(TAG + "hookStartActivity OK");
+            XposedBridge.log(TAG + "hook execStartActivity OK");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "hookStartActivity failed: " + t.getMessage());
+            XposedBridge.log(TAG + "hook execStartActivity failed: " + t.getMessage());
+        }
+
+        // Hook Activity.startActivityForResult — 补漏拦截另一条 startActivity 路径
+        try {
+            XposedHelpers.findAndHookMethod("android.app.Activity", cl,
+                "startActivityForResult",
+                Intent.class, int.class, android.os.Bundle.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        Intent intent = (Intent) param.args[0];
+                        if (intent == null) return;
+                        String pkg = getTargetPackage(intent);
+                        if (pkg != null && shouldSpoof(pkg, hostApp)) {
+                            Activity activity = (Activity) param.thisObject;
+                            if (isAppReallyInstalled(activity, pkg)) {
+                                XposedBridge.log(TAG + "startActivityForResult allow (installed): " + pkg);
+                                return;
+                            }
+                            XposedBridge.log(TAG + "startActivityForResult redirect: " + pkg);
+                            param.args[0] = makeBrowserIntent(pkg);
+                        }
+                    }
+                });
+            XposedBridge.log(TAG + "hook startActivityForResult OK");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "hook startActivityForResult failed: " + t.getMessage());
         }
     }
 
