@@ -249,20 +249,21 @@ public class MainHook implements IXposedHookLoadPackage {
     /**
      * 检查应用是否真的安装在手机上
      * 通过反射调用 IPackageManager 原始方法，绕过本模块对 ApplicationPackageManager 的 hook
+     * 使用 MATCH_UNINSTALLED_PACKAGES 标志，覆盖所有用户（包括双开/分身）
      */
     private boolean isAppReallyInstalled(android.content.Context context, String pkg) {
         try {
-            // 获取原始 IPackageManager Binder 代理（不受本模块 hook 影响）
             Object pm = context.getPackageManager();
             java.lang.reflect.Method getPM = pm.getClass().getMethod("getService");
             Object ipm = getPM.invoke(pm);
             if (ipm == null) return false;
 
-            // 尝试调用 getApplicationInfo(String, long, String) — API 33+
+            // MATCH_UNINSTALLED_PACKAGES = 0x00004000，查询所有用户的应用（含双开）
+            // 尝试 API 33+ 的 long 参数签名
             try {
                 java.lang.reflect.Method m = ipm.getClass().getMethod(
                     "getApplicationInfo", String.class, long.class, String.class);
-                Object ai = m.invoke(ipm, pkg, 0x00040000L, "0");
+                Object ai = m.invoke(ipm, pkg, 0x00004000L, "0");
                 if (ai != null) {
                     java.lang.reflect.Field f = ai.getClass().getField("flags");
                     int flags = f.getInt(ai);
@@ -272,7 +273,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 // API 33 以下用 int 参数
                 java.lang.reflect.Method m = ipm.getClass().getMethod(
                     "getApplicationInfo", String.class, int.class, String.class);
-                Object ai = m.invoke(ipm, pkg, 0, "0");
+                Object ai = m.invoke(ipm, pkg, 0x00004000, "0");
                 if (ai != null) {
                     java.lang.reflect.Field f = ai.getClass().getField("flags");
                     int flags = f.getInt(ai);
