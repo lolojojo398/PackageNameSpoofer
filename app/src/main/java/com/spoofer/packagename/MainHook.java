@@ -3,6 +3,7 @@ package com.spoofer.packagename;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.net.Uri;
 import android.os.Bundle;
@@ -195,6 +196,11 @@ public class MainHook implements IXposedHookLoadPackage {
                         if (intent == null) return;
                         String pkg = getTargetPackage(intent);
                         if (pkg != null && shouldSpoof(pkg, hostApp)) {
+                            // 如果应用实际已安装，放行让它正常打开
+                            if (isAppReallyInstalled((android.content.Context) param.args[0], pkg)) {
+                                XposedBridge.log(TAG + "execStartActivity allow (installed): " + pkg);
+                                return;
+                            }
                             XposedBridge.log(TAG + "execStartActivity redirect: " + pkg + " hostApp=" + hostApp + " pid=" + android.os.Process.myPid());
                             param.args[4] = makeSettingsIntent();
                         }
@@ -210,6 +216,45 @@ public class MainHook implements IXposedHookLoadPackage {
         if (intent.getPackage() != null) return intent.getPackage();
         if (intent.getComponent() != null) return intent.getComponent().getPackageName();
         return intent.getPackage();
+    }
+
+    /**
+     * 检查应用是否真的安装在手机上
+     * 通过反射调用 IPackageManager 原始方法，绕过本模块对 ApplicationPackageManager 的 hook
+     */
+    private boolean isAppReallyInstalled(android.content.Context context, String pkg) {
+        try {
+            // 获取原始 IPackageManager Binder 代理（不受本模块 hook 影响）
+            Object pm = context.getPackageManager();
+            java.lang.reflect.Method getPM = pm.getClass().getMethod("getService");
+            Object ipm = getPM.invoke(pm);
+            if (ipm == null) return false;
+
+            // 尝试调用 getApplicationInfo(String, long, String) — API 33+
+            try {
+                java.lang.reflect.Method m = ipm.getClass().getMethod(
+                    "getApplicationInfo", String.class, long.class, String.class);
+                Object ai = m.invoke(ipm, pkg, 0x00040000L, "0");
+                if (ai != null) {
+                    java.lang.reflect.Field f = ai.getClass().getField("flags");
+                    int flags = f.getInt(ai);
+                    return (flags & ApplicationInfo.FLAG_INSTALLED) != 0;
+                }
+            } catch (NoSuchMethodException e) {
+                // API 33 以下用 int 参数
+                java.lang.reflect.Method m = ipm.getClass().getMethod(
+                    "getApplicationInfo", String.class, int.class, String.class);
+                Object ai = m.invoke(ipm, pkg, 0, "0");
+                if (ai != null) {
+                    java.lang.reflect.Field f = ai.getClass().getField("flags");
+                    int flags = f.getInt(ai);
+                    return (flags & ApplicationInfo.FLAG_INSTALLED) != 0;
+                }
+            }
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "isAppReallyInstalled failed for " + pkg + ": " + t.getMessage());
+        }
+        return false;
     }
 
     /**
