@@ -202,7 +202,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                 return;
                             }
                             XposedBridge.log(TAG + "execStartActivity redirect: " + pkg + " hostApp=" + hostApp + " pid=" + android.os.Process.myPid());
-                            param.args[4] = makeSettingsIntent();
+                            param.args[4] = makeBrowserIntent(pkg);
                         }
                     }
                 });
@@ -258,10 +258,12 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /**
-     * 改为打开系统设置，不再依赖 Via 浏览器
+     * 未安装时拉起 Via 浏览器
      */
-    private Intent makeSettingsIntent() {
-        Intent i = new Intent(android.provider.Settings.ACTION_SETTINGS);
+    private Intent makeBrowserIntent(String pkg) {
+        Intent i = new Intent(Intent.ACTION_VIEW,
+            Uri.parse("https://play.google.com/store/apps/details?id=" + pkg));
+        i.setPackage("mark.via");
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         return i;
     }
@@ -456,7 +458,7 @@ public class MainHook implements IXposedHookLoadPackage {
         if (pkg.startsWith("com.miui.")) return false;
         if (pkg.startsWith("com.xiaomi.")) return false;
         if (pkg.startsWith("com.google.")) return false;
-        // 无需排除 mark.via，因为我们已经不再使用 Via 浏览器了
+        if (pkg.equals("mark.via")) return false;
         if (pkg.equals(hostApp)) return false;
         // 排除QQ音乐相关包名，防止读取不到真实metaData导致NPE
         if (pkg.startsWith("com.tencent.qqmusiclite")) return false;
