@@ -20,7 +20,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public class MainHook implements IXposedHookLoadPackage {
 
-    private static final String TAG = "[Spoofer] ";
+    private static final String TAG = "[Spoofer] "; // test
     private static String savedOrigFingerprint = null;
     private static String savedOrigModel = null;
     private static String savedOrigDevice = null;
