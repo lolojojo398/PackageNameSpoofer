@@ -238,6 +238,82 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             XposedBridge.log(TAG + "hook startActivityForResult failed: " + t.getMessage());
         }
+
+        // Hook Activity.startActivity — 拦截 market:// 直链（广告SDK绕过上述hook的路径）
+        try {
+            XposedHelpers.findAndHookMethod("android.app.Activity", cl,
+                "startActivity", Intent.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        Intent intent = (Intent) param.args[0];
+                        if (intent == null) return;
+                        String marketPkg = extractMarketPkg(intent);
+                        if (marketPkg != null && shouldSpoof(marketPkg, hostApp)) {
+                            Activity activity = (Activity) param.thisObject;
+                            if (isAppReallyInstalled(activity, marketPkg)) {
+                                XposedBridge.log(TAG + "startActivity allow market (installed): " + marketPkg);
+                                return;
+                            }
+                            XposedBridge.log(TAG + "startActivity redirect market: " + marketPkg);
+                            param.args[0] = makeBrowserIntent(marketPkg);
+                        }
+                    }
+                });
+            XposedBridge.log(TAG + "hook Activity.startActivity OK");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "hook Activity.startActivity failed: " + t.getMessage());
+        }
+
+        // Hook ContextWrapper.startActivity — 防止广告SDK用非Activity Context调用
+        try {
+            XposedHelpers.findAndHookMethod("android.content.ContextWrapper", cl,
+                "startActivity", Intent.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        Intent intent = (Intent) param.args[0];
+                        if (intent == null) return;
+                        String marketPkg = extractMarketPkg(intent);
+                        if (marketPkg != null && shouldSpoof(marketPkg, hostApp)) {
+                            android.content.Context ctx = (android.content.Context) param.thisObject;
+                            if (isAppReallyInstalled(ctx, marketPkg)) {
+                                XposedBridge.log(TAG + "ContextWrapper allow market (installed): " + marketPkg);
+                                return;
+                            }
+                            XposedBridge.log(TAG + "ContextWrapper redirect market: " + marketPkg);
+                            param.args[0] = makeBrowserIntent(marketPkg);
+                        }
+                    }
+                });
+            XposedBridge.log(TAG + "hook ContextWrapper.startActivity OK");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "hook ContextWrapper.startActivity failed: " + t.getMessage());
+        }
+    }
+
+    /**
+     * 从 market://details?id=xxx 或 market://details/xxx URL 中提取包名
+     */
+    private String extractMarketPkg(Intent intent) {
+        try {
+            android.net.Uri data = intent.getData();
+            if (data == null) return null;
+            String scheme = data.getScheme();
+            if (!"market".equals(scheme)) return null;
+            // market://details?id=com.example.app
+            String id = data.getQueryParameter("id");
+            if (id != null && !id.isEmpty()) return id;
+            // market://details/com.example.app
+            String path = data.getPath();
+            if (path != null && path.startsWith("/details/")) return path.substring("/details/".length());
+            if (path != null && path.startsWith("/details")) {
+                String rest = path.substring("/details".length());
+                if (rest.startsWith("/")) rest = rest.substring(1);
+                if (!rest.isEmpty()) return rest;
+            }
+        } catch (Throwable t) {}
+        return null;
     }
 
     private String getTargetPackage(Intent intent) {
