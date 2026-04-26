@@ -22,7 +22,7 @@
             android:value="true" />
         <meta-data
             android:name="xposeddescription"
-            android:value="让所有应用查询都返回已安装状态" />
+            android:value="包名伪装 + 广告弹窗拦截" />
         <meta-data
             android:name="xposedminversion"
             android:value="82" />
