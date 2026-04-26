@@ -248,8 +248,8 @@ public class MainHook implements IXposedHookLoadPackage {
 
     /**
      * 检查应用是否真的安装在手机上
-     * 通过反射调用 IPackageManager 原始方法，绕过本模块对 ApplicationPackageManager 的 hook
-     * 使用 MATCH_UNINSTALLED_PACKAGES 标志，覆盖所有用户（包括双开/分身）
+     * 通过反射调用 IPackageManager.getApplicationInfo 原始方法，绕过本模块 hook
+     * 依次检查当前用户和主用户(user 0)，覆盖双开/分身场景
      */
     private boolean isAppReallyInstalled(android.content.Context context, String pkg) {
         try {
@@ -258,31 +258,39 @@ public class MainHook implements IXposedHookLoadPackage {
             Object ipm = getPM.invoke(pm);
             if (ipm == null) return false;
 
-            // MATCH_UNINSTALLED_PACKAGES = 0x00004000，查询所有用户的应用（含双开）
-            // 尝试 API 33+ 的 long 参数签名
-            try {
-                java.lang.reflect.Method m = ipm.getClass().getMethod(
-                    "getApplicationInfo", String.class, long.class, String.class);
-                Object ai = m.invoke(ipm, pkg, 0x00004000L, "0");
-                if (ai != null) {
-                    java.lang.reflect.Field f = ai.getClass().getField("flags");
-                    int flags = f.getInt(ai);
-                    return (flags & ApplicationInfo.FLAG_INSTALLED) != 0;
-                }
-            } catch (NoSuchMethodException e) {
-                // API 33 以下用 int 参数
-                java.lang.reflect.Method m = ipm.getClass().getMethod(
-                    "getApplicationInfo", String.class, int.class, String.class);
-                Object ai = m.invoke(ipm, pkg, 0x00004000, "0");
-                if (ai != null) {
-                    java.lang.reflect.Field f = ai.getClass().getField("flags");
-                    int flags = f.getInt(ai);
-                    return (flags & ApplicationInfo.FLAG_INSTALLED) != 0;
-                }
+            // 依次检查不同用户: 先当前用户，再 user 0（双开微信在 user 0 上）
+            int[] userIds = {android.os.Process.myUserHandle().hashCode(), 0};
+            for (int uid : userIds) {
+                if (isInstalledForUser(ipm, pkg, uid)) return true;
             }
         } catch (Throwable t) {
             XposedBridge.log(TAG + "isAppReallyInstalled failed for " + pkg + ": " + t.getMessage());
         }
+        return false;
+    }
+
+    private boolean isInstalledForUser(Object ipm, String pkg, int userId) {
+        try {
+            // API 33+: getApplicationInfo(String packageName, long flags, int userId)
+            java.lang.reflect.Method m = ipm.getClass().getMethod(
+                "getApplicationInfo", String.class, long.class, int.class);
+            Object ai = m.invoke(ipm, pkg, 0x00004000L, userId);
+            if (ai != null) {
+                int flags = ai.getClass().getField("flags").getInt(ai);
+                return (flags & ApplicationInfo.FLAG_INSTALLED) != 0;
+            }
+        } catch (NoSuchMethodException e) {
+            try {
+                // API 28-32: getApplicationInfo(String packageName, int flags, int userId)
+                java.lang.reflect.Method m = ipm.getClass().getMethod(
+                    "getApplicationInfo", String.class, int.class, int.class);
+                Object ai = m.invoke(ipm, pkg, 0x00004000, userId);
+                if (ai != null) {
+                    int flags = ai.getClass().getField("flags").getInt(ai);
+                    return (flags & ApplicationInfo.FLAG_INSTALLED) != 0;
+                }
+            } catch (Throwable t) {}
+        } catch (Throwable t) {}
         return false;
     }
 
