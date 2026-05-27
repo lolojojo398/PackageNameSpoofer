@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>HAR 发包工具</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,sans-serif;background:#0f0f1a;color:#e0e0e0;font-size:14px;-webkit-tap-highlight-color:transparent}
+.container{max-width:100%;padding:12px}
+header{text-align:center;padding:16px 0;border-bottom:1px solid #2a2a4a;margin-bottom:12px}
+header h1{font-size:22px;color:#7c8aff}
+header p{color:#888;font-size:12px;margin-top:4px}
+.card{background:#1a1a2e;border:1px solid #2a2a4a;border-radius:10px;padding:14px;margin-bottom:12px}
+.card-title{font-size:14px;font-weight:600;color:#a0a8ff;margin-bottom:12px;display:flex;align-items:center;gap:6px}
+.card-title::before{content:'';width:3px;height:14px;background:#7c8aff;border-radius:2px}
+.tabs{display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap}
+.tab{flex:1;padding:8px 4px;text-align:center;background:#16162b;border:1px solid #2a2a4a;border-radius:6px;font-size:12px;color:#888;cursor:pointer;min-width:60px}
+.tab.active{background:#2a2a4a;color:#7c8aff;border-color:#7c8aff}
+.tab-content{display:none}
+.tab-content.active{display:block}
+.btn{padding:10px 16px;border:none;border-radius:8px;font-size:14px;font-weight:500;cursor:pointer;width:100%;margin-top:8px}
+.btn-primary{background:#7c8aff;color:#fff}
+.btn-success{background:#4caf50;color:#fff}
+.btn-danger{background:#f44336;color:#fff}
+.btn-warning{background:#ff9800;color:#fff}
+.btn:disabled{opacity:0.5}
+.btn-sm{padding:8px 12px;font-size:13px}
+.btn-row{display:flex;gap:8px;margin-top:8px}
+.btn-row .btn{flex:1}
+.form-group{margin-bottom:10px}
+.form-group label{display:block;font-size:12px;color:#888;margin-bottom:4px}
+.form-group input,.form-group textarea{width:100%;padding:8px 10px;background:#16162b;border:1px solid #2a2a4a;border-radius:6px;color:#e0e0e0;font-size:14px}
+.form-group textarea{font-family:monospace;resize:vertical;min-height:120px}
+.form-group input:focus,.form-group textarea:focus{outline:none;border-color:#7c8aff}
+.entry-item{background:#16162b;border:1px solid #2a2a4a;border-radius:8px;padding:10px;margin-bottom:6px;cursor:pointer}
+.entry-item.selected{border-color:#7c8aff;background:#1e1e38}
+.entry-method{color:#4caf50;font-weight:600;font-size:12px}
+.entry-url{color:#b0b8ff;font-size:11px;word-break:break-all;margin-top:2px}
+.entry-meta{color:#888;font-size:11px;margin-top:2px}
+.countdown{text-align:center;padding:20px 0}
+.countdown-time{font-size:48px;font-weight:700;color:#7c8aff;font-family:monospace}
+.countdown-label{font-size:12px;color:#888;margin-top:4px}
+.countdown-target{font-size:16px;color:#ff9800;margin-top:8px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.stat-box{background:#16162b;border-radius:8px;padding:10px;text-align:center}
+.stat-value{font-size:22px;font-weight:700;color:#7c8aff}
+.stat-label{font-size:11px;color:#888;margin-top:2px}
+.response-box{background:#0d0d1a;border:1px solid #2a2a4a;border-radius:8px;padding:10px;max-height:200px;overflow-y:auto;font-family:monospace;font-size:11px;white-space:pre-wrap;word-break:break-all;color:#b0b8ff}
+.log-box{background:#0d0d1a;border:1px solid #2a2a4a;border-radius:8px;padding:10px;max-height:200px;overflow-y:auto;font-family:monospace;font-size:11px}
+.log-entry{padding:2px 0;border-bottom:1px solid #1a1a2e}
+.log-ok{color:#4caf50}
+.log-err{color:#f44336}
+.rule-item{background:#16162b;border-radius:6px;padding:10px;margin-bottom:6px}
+.rule-url{color:#ff9800;font-size:12px}
+.rule-replace{font-size:11px;color:#888;margin-top:4px}
+.vpn-status{display:flex;align-items:center;gap:8px;padding:10px;background:#16162b;border-radius:8px;margin-bottom:12px}
+.vpn-dot{width:10px;height:10px;border-radius:50%}
+.vpn-dot.on{background:#4caf50;animation:pulse 1s infinite}
+.vpn-dot.off{background:#f44336}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.toast{position:fixed;top:12px;left:50%;transform:translateX(-50%);padding:10px 20px;background:#2a2a4a;border-radius:8px;font-size:13px;z-index:1000;animation:fadeIn .3s;border-left:4px solid #7c8aff;white-space:nowrap}
+@keyframes fadeIn{from{opacity:0;top:0}to{opacity:1;top:12px}}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div class="container">
+<header>
+<h1>HAR 发包工具</h1>
+<p>抓包导入 & 定时发包</p>
+</header>
+
+<div class="vpn-status">
+<div class="vpn-dot off" id="vpnDot"></div>
+<span id="vpnStatusText">VPN: 已关闭</span>
+<div style="flex:1"></div>
+<button class="btn btn-sm btn-success" id="vpnToggle" onclick="toggleVpn()" style="width:auto;margin:0;padding:6px 16px">开启VPN</button>
+</div>
+
+<div class="tabs">
+<div class="tab active" onclick="switchTab('capture')">抓包</div>
+<div class="tab" onclick="switchTab('curl')">CURL</div>
+<div class="tab" onclick="switchTab('send')">发包</div>
+<div class="tab" onclick="switchTab('rules')">规则</div>
+<div class="tab" onclick="switchTab('logs')">日志</div>
+</div>
+
+<div class="tab-content active" id="tab-capture">
+<div class="card">
+<div class="card-title">导入HAR文件</div>
+<p style="font-size:12px;color:#888;margin-bottom:10px">用ProxyPin/HttpCanary抓包后，导入.har文件到这里</p>
+<div class="btn-row">
+<button class="btn btn-sm btn-primary" onclick="importHar()">选择HAR文件</button>
+<button class="btn btn-sm btn-warning" onclick="loadCaptured()">加载已抓的包</button>
+</div>
+<input type="file" id="harFileInput" accept=".har,.json" style="display:none" onchange="onHarFileSelected(event)">
+<div id="harInfo" style="margin-top:10px;font-size:12px;color:#888">未加载HAR - 点击上方按钮导入</div>
+</div>
+<div class="card" id="entriesCard" style="display:none">
+<div class="card-title">HTTP请求列表</div>
+<div id="entryList"></div>
+</div>
+</div>
+
+<div class="tab-content" id="tab-curl">
+<div class="card">
+<div class="card-title">输入CURL命令</div>
+<p style="font-size:12px;color:#888;margin-bottom:10px">粘贴curl命令，自动解析为请求</p>
+<div class="form-group">
+<textarea id="curlInput" placeholder="curl -X POST https://example.com/api \&#10;-H 'Content-Type: application/json' \&#10;-d '{\"key\":\"value\"}'"></textarea>
+</div>
+<div class="btn-row">
+<button class="btn btn-sm btn-primary" onclick="parseCurl()">解析CURL</button>
+<button class="btn btn-sm btn-success" onclick="saveCurl()">保存CURL</button>
+<button class="btn btn-sm btn-warning" onclick="loadCurl()">加载已保存</button>
+</div>
+</div>
+<div class="card" id="curlParsedCard" style="display:none">
+<div class="card-title">解析结果</div>
+<div id="curlParsedResult" style="font-size:12px;color:#b0b8ff;word-break:break-all"></div>
+<div class="btn-row" style="margin-top:10px">
+<button class="btn btn-sm btn-primary" onclick="useCurlEntry()">使用此请求</button>
+<button class="btn btn-sm btn-success" onclick="sendCurlOnce()">发送一次</button>
+</div>
+</div>
+</div>
+
+<div class="tab-content" id="tab-send">
+<div class="card">
+<div class="card-title">当前选中的请求</div>
+<div id="selectedEntry" style="font-size:12px;color:#888">未选择请求</div>
+</div>
+<div class="card">
+<div class="card-title">发包设置</div>
+<div class="form-group">
+<label>目标发包时间 (HH:MM:SS)</label>
+<input type="text" id="targetTime" value="11:59:55" placeholder="11:59:55">
+</div>
+<div class="form-group">
+<label>发包间隔 (毫秒)</label>
+<input type="number" id="intervalMs" value="650" min="100" max="10000">
+</div>
+<div class="form-group">
+<label>持续时间 (秒)</label>
+<input type="number" id="durationSec" value="30" min="1" max="300">
+</div>
+<div class="btn-row">
+<button class="btn btn-primary" onclick="sendOnce()">手动发一次</button>
+<button class="btn btn-success" onclick="startBurst()">定时自动发包</button>
+</div>
+<button class="btn btn-danger" onclick="stopBurst()" id="stopBtn" disabled>停止</button>
+</div>
+<div class="card">
+<div class="countdown" id="countdownBox" style="display:none">
+<div class="countdown-label" id="countdownLabel">等待中...</div>
+<div class="countdown-time" id="countdownTime">00:00:00</div>
+<div class="countdown-target" id="countdownTarget"></div>
+</div>
+</div>
+<div class="card">
+<div class="card-title">状态</div>
+<div class="stats">
+<div class="stat-box"><div class="stat-value" id="statSent">0</div><div class="stat-label">已发送</div></div>
+<div class="stat-box"><div class="stat-value" id="statErrors">0</div><div class="stat-label">错误</div></div>
+<div class="stat-box"><div class="stat-value" id="statLast">-</div><div class="stat-label">最近状态</div></div>
+</div>
+</div>
+<div class="card">
+<div class="card-title">最近响应</div>
+<div class="response-box" id="responseBox">暂无响应</div>
+</div>
+</div>
+
+<div class="tab-content" id="tab-rules">
+<div class="card">
+<div class="card-title">重写规则</div>
+<p style="font-size:12px;color:#888;margin-bottom:10px">拦截响应并替换指定内容</p>
+<div id="rulesList"></div>
+<div class="btn-row">
+<button class="btn btn-sm btn-primary" onclick="addRule()">添加规则</button>
+<button class="btn btn-sm btn-success" onclick="saveRules()">保存规则</button>
+</div>
+</div>
+<div class="card">
+<div class="card-title">快速设置</div>
+<p style="font-size:12px;color:#888">小米音乐默认规则:</p>
+<div class="rule-item" style="margin-top:8px">
+<div class="rule-url">URL匹配: GetProductWithFilter</div>
+<div class="rule-replace">替换: "allSalesData":{"day":200 &rarr; "day":0</div>
+</div>
+<button class="btn btn-sm btn-warning" onclick="resetDefaultRules()" style="margin-top:8px">恢复默认规则</button>
+</div>
+</div>
+
+<div class="tab-content" id="tab-logs">
+<div class="card">
+<div class="card-title">发包日志</div>
+<div class="log-box" id="logBox">暂无日志</div>
+<button class="btn btn-sm btn-danger" onclick="clearLogs()" style="margin-top:8px">清除日志</button>
+</div>
+</div>
+
+</div>
+
+<script>
+var harEntries=[];
+var selectedIndex=0;
+var logs=[];
+var rules=[];
+var burstRunning=false;
+var countdownInterval=null;
+var statusInterval=null;
+var sendCount=0;
+var errorCount=0;
+var curlEntry=null;
+
+function switchTab(name){
+document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active')});
+document.querySelectorAll('.tab-content').forEach(function(t){t.classList.remove('active')});
+var names=['capture','curl','send','rules','logs'];
+var idx=names.indexOf(name);
+if(idx>=0)document.querySelectorAll('.tab')[idx].classList.add('active');
+document.getElementById('tab-'+name).classList.add('active');
+if(name==='rules')loadRules();
+if(name==='logs')refreshLogs();
+}
+
+function showToast(msg){
+var t=document.createElement('div');
+t.className='toast';
+t.textContent=msg;
+document.body.appendChild(t);
+setTimeout(function(){t.remove()},2500);
+}
+
+function toggleVpn(){
+if(typeof Android==='undefined'){showToast('Android未就绪');return}
+if(Android.isVpnRunning())Android.stopVpn();
+else Android.startVpn();
+}
+function onVpnStateChanged(running){
+var dot=document.getElementById('vpnDot');
+var txt=document.getElementById('vpnStatusText');
+var btn=document.getElementById('vpnToggle');
+if(running){dot.className='vpn-dot on';txt.textContent='VPN: 运行中';btn.textContent='关闭VPN';btn.className='btn btn-sm btn-danger'}
+else{dot.className='vpn-dot off';txt.textContent='VPN: 已关闭';btn.textContent='开启VPN';btn.className='btn btn-sm btn-success'}
+}
+
+function importHar(){
+document.getElementById('harFileInput').click();
+}
+function onHarFileSelected(e){
+var file=e.target.files[0];
+if(!file)return;
+var reader=new FileReader();
+reader.onload=function(ev){
+try{
+var har=JSON.parse(ev.target.result);
+parseHar(har);
+if(typeof Android!=='undefined')Android.saveHar(ev.target.result);
+showToast('导入成功: '+harEntries.length+' 条请求');
+}catch(err){showToast('HAR文件格式错误: '+err.message)}
+};
+reader.readAsText(file);
+}
+function onFileLoaded(content){
+try{
+var har=JSON.parse(content);
+parseHar(har);
+showToast('导入成功: '+harEntries.length+' 条请求');
+}catch(err){showToast('HAR文件格式错误: '+err.message)}
+}
+function onFileError(msg){
+showToast(msg);
+}
+function loadCaptured(){
+if(typeof Android==='undefined'){showToast('Android未就绪');return}
+var content=Android.getCapturedPackets();
+try{
+var har=JSON.parse(content);
+if(Array.isArray(har)){showToast('没有已抓的包');return}
+parseHar(har);
+showToast('加载成功: '+harEntries.length+' 条请求');
+}catch(err){showToast('加载失败: '+err)}
+}
+function parseHar(har){
+harEntries=[];
+var entries=har.log?har.log.entries:(har.entries||[]);
+entries.forEach(function(entry){
+var req=entry.request||{};
+var resp=entry.response||{};
+var headers={};
+(req.headers||[]).forEach(function(h){headers[h.name]=h.value});
+var body='';
+if(req.postData)body=req.postData.text||'';
+var respText='';
+if(resp.content)respText=resp.content.text||'';
+harEntries.push({method:req.method||'GET',url:req.url||'',headers:headers,body:body,status:resp.status||0,response:respText,app:entry._app||{}});
+});
+renderEntries();
+document.getElementById('harInfo').textContent='已加载: '+harEntries.length+' 条请求';
+document.getElementById('entriesCard').style.display='block';
+}
+function renderEntries(){
+var list=document.getElementById('entryList');
+list.innerHTML='';
+harEntries.forEach(function(entry,i){
+var item=document.createElement('div');
+item.className='entry-item'+(i===selectedIndex?' selected':'');
+item.innerHTML='<span style="float:right;color:#4caf50;font-size:11px">'+entry.status+'</span>'
++'<span class="entry-method">'+entry.method+'</span>'
++'<div class="entry-url">'+entry.url.substring(0,80)+(entry.url.length>80?'...':'')+'</div>'
++'<div class="entry-meta">'+(entry.app.name||'')+'</div>';
+item.onclick=function(){selectedIndex=i;renderEntries();updateSelectedEntry()};
+list.appendChild(item);
+});
+updateSelectedEntry();
+}
+function updateSelectedEntry(){
+if(!harEntries.length)return;
+var e=harEntries[selectedIndex];
+document.getElementById('selectedEntry').innerHTML=
+'<span class="entry-method">'+e.method+'</span> '+e.url.substring(0,100)+'<br>'
++'<span style="color:#888">状态码: '+e.status+'</span>';
+}
+
+// ===== CURL functions =====
+function parseCurl(){
+if(typeof Android==='undefined'){showToast('Android未就绪');return}
+var curl=document.getElementById('curlInput').value.trim();
+if(!curl){showToast('请输入curl命令');return}
+var result=Android.curlToEntry(curl);
+try{
+var entry=JSON.parse(result);
+if(entry.error){showToast('解析失败: '+entry.error);return}
+curlEntry=entry;
+var display='<span class="entry-method">'+entry.method+'</span> '+entry.url+'<br>';
+display+='<span style="color:#888">Headers:</span><br>';
+var hdrs=entry.headers;
+for(var k in hdrs){
+display+='<span style="color:#ff9800">'+k+':</span> '+hdrs[k]+'<br>';
+}
+if(entry.body){
+display+='<span style="color:#888">Body:</span><br>'+entry.body.substring(0,200);
+}
+document.getElementById('curlParsedResult').innerHTML=display;
+document.getElementById('curlParsedCard').style.display='block';
+showToast('解析成功');
+}catch(e){showToast('解析错误: '+e.message)}
+}
+
+function saveCurl(){
+if(typeof Android==='undefined'){showToast('Android未就绪');return}
+var curl=document.getElementById('curlInput').value.trim();
+if(!curl){showToast('没有内容可保存');return}
+var result=Android.saveCurl(curl);
+try{
+var r=JSON.parse(result);
+if(r.success)showToast('CURL已保存');
+else showToast('保存失败: '+r.error);
+}catch(e){showToast('保存失败')}
+}
+
+function loadCurl(){
+if(typeof Android==='undefined'){showToast('Android未就绪');return}
+var content=Android.loadCurl();
+if(content){document.getElementById('curlInput').value=content;showToast('已加载保存的CURL');}
+else showToast('没有保存的CURL');
+}
+
+function useCurlEntry(){
+if(!curlEntry){showToast('请先解析CURL');return}
+harEntries=[curlEntry];
+selectedIndex=0;
+renderEntries();
+updateSelectedEntry();
+switchTab('send');
+showToast('已选择CURL请求');
+}
+
+function sendCurlOnce(){
+if(!curlEntry){showToast('请先解析CURL');return}
+if(typeof Android==='undefined'){showToast('Android未就绪');return}
+Android.sendRequest(JSON.stringify(curlEntry),'curl_'+Date.now());
+showToast('正在发送...');
+}
+// ===== End CURL functions =====
+
+function sendOnce(){
+if(!harEntries.length){showToast('请先导入HAR文件或输入CURL');return}
+if(typeof Android==='undefined'){showToast('Android未就绪');return}
+Android.sendRequest(JSON.stringify(harEntries[selectedIndex]),'cb_'+Date.now());
+showToast('正在发送...');
+}
+function onRequestResult(id,result){
+sendCount++;
+var isError=!result.success;
+if(!isError){
+try{
+var respText=result.response||'';
+if(respText.indexOf('您的操作太快啦')>=0)isError=true;
+}catch(e){}
+}
+if(isError)errorCount++;
+document.getElementById('statSent').textContent=sendCount;
+document.getElementById('statErrors').textContent=errorCount;
+document.getElementById('statLast').textContent=isError?(result.success?'操作太快':'错误'):result.status_code;
+var box=document.getElementById('responseBox');
+var text='['+result.timestamp+'] ';
+if(!result.success){
+text+='错误: '+result.error;
+}else if(isError){
+text+='状态码: '+result.status_code+' | 耗时: '+result.elapsed_ms+'ms\n\n[触发限流: 操作太快啦]\n\n';
+try{text+=JSON.stringify(JSON.parse(result.response),null,2)}catch(e){text+=result.response}
+}else{
+text+='状态码: '+result.status_code+' | 耗时: '+result.elapsed_ms+'ms\n\n';
+try{text+=JSON.stringify(JSON.parse(result.response),null,2)}catch(e){text+=result.response}
+}
+box.textContent=text;
+result._rateLimited=isError;
+addLog(result);
+}
+function addLog(result){
+logs.push(result);
+if(logs.length>200)logs=logs.slice(-200);
+refreshLogs();
+}
+function refreshLogs(){
+var box=document.getElementById('logBox');
+if(!logs.length){box.textContent='暂无日志';return}
+box.innerHTML=logs.slice(-50).map(function(l){
+var cls=l.success?(l._rateLimited?'log-err':'log-ok'):'log-err';
+var txt=l.success?(l._rateLimited?'操作太快 ('+l.elapsed_ms+'ms)':l.status_code+' ('+l.elapsed_ms+'ms)'):'错误: '+l.error;
+return '<div class="log-entry"><span style="color:#888">['+l.timestamp+']</span> <span class="'+cls+'">'+txt+'</span></div>';
+}).join('');
+box.scrollTop=box.scrollHeight;
+}
+function clearLogs(){
+logs=[];sendCount=0;errorCount=0;
+document.getElementById('statSent').textContent='0';
+document.getElementById('statErrors').textContent='0';
+document.getElementById('logBox').textContent='暂无日志';
+document.getElementById('responseBox').textContent='暂无响应';
+}
+
+function startBurst(){
+if(!harEntries.length){showToast('请先导入HAR文件或输入CURL');return}
+if(burstRunning){showToast('正在运行中');return}
+var targetTime=document.getElementById('targetTime').value.trim();
+var intervalMs=parseInt(document.getElementById('intervalMs').value)||650;
+var durationSec=parseInt(document.getElementById('durationSec').value)||30;
+if(!targetTime){showToast('请设置发包时间');return}
+countdownState.targetTime=targetTime;
+countdownState.intervalMs=intervalMs;
+countdownState.durationSec=durationSec;
+var now=new Date();
+var parts=targetTime.split(':');
+var target=new Date();
+target.setHours(parseInt(parts[0])||0,parseInt(parts[1])||0,parseInt(parts[2])||0,0);
+if(target<=now)target.setDate(target.getDate()+1);
+var waitSec=Math.round((target-now)/1000);
+burstRunning=true;
+document.getElementById('stopBtn').disabled=false;
+document.getElementById('countdownBox').style.display='block';
+document.getElementById('countdownLabel').textContent='等待中...';
+document.getElementById('countdownTarget').textContent='目标: '+targetTime+' (还有'+waitSec+'秒)';
+showToast('已设置定时: '+targetTime);
+startCountdown();
+}
+
+function stopBurst(){
+burstRunning=false;
+document.getElementById('stopBtn').disabled=true;
+document.getElementById('countdownBox').style.display='none';
+if(countdownInterval){clearInterval(countdownInterval);countdownInterval=null;}
+if(statusInterval){clearInterval(statusInterval);statusInterval=null;}
+showToast('已停止');
+}
+
+var countdownState={targetTime:'',intervalMs:650,durationSec:30};
+
+function startCountdown(){
+if(countdownInterval)clearInterval(countdownInterval);
+countdownInterval=setInterval(function(){
+if(!burstRunning){clearInterval(countdownInterval);return;}
+var now=new Date();
+var parts=countdownState.targetTime.split(':');
+var target=new Date();
+target.setHours(parseInt(parts[0])||0,parseInt(parts[1])||0,parseInt(parts[2])||0,0);
+if(target<=now)target.setDate(target.getDate()+1);
+var remaining=Math.max(0,(target-now)/1000);
+var h=Math.floor(remaining/3600);
+var m=Math.floor((remaining%3600)/60);
+var s=Math.floor(remaining%60);
+document.getElementById('countdownTime').textContent=
+String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');
+if(remaining<=0.5){
+clearInterval(countdownInterval);
+countdownInterval=null;
+document.getElementById('countdownLabel').textContent='正在发送...';
+startAutoSend();
+}
+},250);
+}
+
+function startAutoSend(){
+if(!burstRunning)return;
+var entry=harEntries[selectedIndex];
+if(!entry){showToast('未选择请求');burstRunning=false;return;}
+var interval=countdownState.intervalMs;
+var duration=countdownState.durationSec;
+var count=0;
+var maxCount=Math.floor(duration*1000/interval);
+showToast('开始发包: 共'+maxCount+'次');
+statusInterval=setInterval(function(){
+if(!burstRunning||count>=maxCount){
+clearInterval(statusInterval);
+statusInterval=null;
+burstRunning=false;
+document.getElementById('stopBtn').disabled=true;
+document.getElementById('countdownLabel').textContent='已完成!';
+showToast('发包完成: 共发送'+count+'次');
+setTimeout(function(){document.getElementById('countdownBox').style.display='none';},2000);
+return;
+}
+if(typeof Android!=='undefined'){
+Android.sendRequest(JSON.stringify(entry),'burst_'+count);
+}
+count++;
+},interval);
+}
+
+function loadRules(){
+if(typeof Android==='undefined')return;
+try{rules=JSON.parse(Android.loadRewriteRules())}catch(e){rules=[]}
+if(!rules.length)rules=[{urlMatch:'GetProductWithFilter',find:'"allSalesData":{"day":200',replace:'"allSalesData":{"day":0'}];
+renderRules();
+}
+function renderRules(){
+var list=document.getElementById('rulesList');
+list.innerHTML='';
+rules.forEach(function(rule,i){
+var item=document.createElement('div');
+item.className='rule-item';
+item.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center">'
++'<span class="rule-url">'+rule.urlMatch+'</span>'
++'<button class="btn btn-sm btn-danger" style="width:auto;margin:0;padding:4px 8px" onclick="removeRule('+i+')">删除</button></div>'
++'<div class="rule-replace">查找: '+rule.find+'</div>'
++'<div class="rule-replace">替换: '+rule.replace+'</div>';
+list.appendChild(item);
+});
+}
+function addRule(){
+rules.push({urlMatch:'',find:'',replace:''});
+renderRules();
+var items=document.querySelectorAll('.rule-item');
+var last=items[items.length-1];
+last.innerHTML='<div class="form-group"><label>URL匹配</label><input type="text" onchange="rules['+(rules.length-1)+'].urlMatch=this.value"></div>'
++'<div class="form-group"><label>查找内容</label><input type="text" onchange="rules['+(rules.length-1)+'].find=this.value"></div>'
++'<div class="form-group"><label>替换内容</label><input type="text" onchange="rules['+(rules.length-1)+'].replace=this.value"></div>';
+}
+function removeRule(i){rules.splice(i,1);renderRules()}
+function saveRules(){
+if(typeof Android==='undefined')return;
+Android.saveRewriteRules(JSON.stringify(rules));
+showToast('规则已保存');
+}
+function resetDefaultRules(){
+rules=[{urlMatch:'GetProductWithFilter',find:'"allSalesData":{"day":200',replace:'"allSalesData":{"day":0'}];
+renderRules();saveRules();
+showToast('已恢复默认规则');
+}
+
+window.onerror=function(msg){showToast('JS错误: '+msg)};
+</script>
+</body>
+</html>

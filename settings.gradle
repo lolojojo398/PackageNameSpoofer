@@ -1,2 +1,2 @@
-rootProject.name = "PackageNameSpoofer"
+rootProject.name = "HarPacketSender"
 include ':app'
