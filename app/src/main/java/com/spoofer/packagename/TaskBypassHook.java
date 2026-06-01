@@ -5,30 +5,31 @@ import android.os.Handler;
 import android.os.Looper;
 
 import java.io.DataOutputStream;
+import java.io.File;
+import java.util.HashMap;
+import java.util.Map;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
-/**
- * 通过 root 权限直接修改系统时间来绕过任务时间校验
- * 与用户手动改时间的原理完全一致
- */
 public class TaskBypassHook {
 
     private static final String TAG = "[TaskBypass] ";
-    private static final long BG_THRESHOLD_NS = 3_000_000_000L;  // 后台3秒
-    private static final int OFFSET_SECONDS = 180;  // 往前拨3分钟
-    private static final int RESTORE_DELAY_MS = 60000;  // 60秒后恢复
+    private static final long BG_THRESHOLD_NS = 3_000_000_000L;
+    private static final int OFFSET_SECONDS = 180;
+    private static final int RESTORE_DELAY_MS = 60000;
 
     private static volatile long sLastPauseNano = 0;
     private static volatile boolean sProcessing = false;
+    private static String sSuPath = null;
 
     public static void hook(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.miui.player".equals(lpparam.packageName)) return;
 
         XposedBridge.log(TAG + "Installing hooks (root mode)");
+        findSu();
 
         try {
             XposedHelpers.findAndHookMethod(
@@ -46,34 +47,32 @@ public class TaskBypassHook {
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
-                        if (sProcessing) return;
+                        if (sProcessing || sSuPath == null) return;
                         if (sLastPauseNano == 0) return;
-
-                        long bgDuration = System.nanoTime() - sLastPauseNano;
-                        if (bgDuration < BG_THRESHOLD_NS) return;
+                        long bg = System.nanoTime() - sLastPauseNano;
+                        if (bg < BG_THRESHOLD_NS) return;
 
                         sProcessing = true;
-                        XposedBridge.log(TAG + "Background " + (bgDuration / 1_000_000)
-                            + "ms -> changing system time via root");
+                        XposedBridge.log(TAG + "Background " + (bg / 1_000_000)
+                            + "ms -> changing time via " + sSuPath);
 
-                        // 在子线程执行 root 命令
                         new Thread(() -> {
                             try {
                                 // 关闭自动时间同步
-                                execRoot("settings put global auto_time 0");
+                                runSu("settings put global auto_time 0");
+                                Thread.sleep(200);
 
-                                // 获取当前时间并往后拨
-                                long currentSec = System.currentTimeMillis() / 1000;
-                                long newSec = currentSec + OFFSET_SECONDS;
-                                execRoot("date -s @" + newSec);
+                                // 往后拨3分钟
+                                long newSec = System.currentTimeMillis() / 1000 + OFFSET_SECONDS;
+                                runSu("date -s @" + newSec);
 
-                                XposedBridge.log(TAG + "System time set to +" + OFFSET_SECONDS + "s");
+                                XposedBridge.log(TAG + "Time set +" + OFFSET_SECONDS + "s");
 
                                 // 60秒后恢复
                                 new Handler(Looper.getMainLooper()).postDelayed(() -> {
                                     try {
-                                        execRoot("settings put global auto_time 1");
-                                        XposedBridge.log(TAG + "Auto time sync restored");
+                                        runSu("settings put global auto_time 1");
+                                        XposedBridge.log(TAG + "Time sync restored");
                                     } catch (Throwable t) {
                                         XposedBridge.log(TAG + "Restore failed: " + t.getMessage());
                                     }
@@ -81,15 +80,15 @@ public class TaskBypassHook {
                                 }, RESTORE_DELAY_MS);
 
                             } catch (Throwable t) {
-                                XposedBridge.log(TAG + "Root time change failed: " + t.getMessage());
+                                XposedBridge.log(TAG + "Failed: " + t.getMessage());
                                 sProcessing = false;
                             }
-                        }, "TaskBypass-RootThread").start();
+                        }).start();
                     }
                 }
             );
 
-            XposedBridge.log(TAG + "Lifecycle hooked (root mode)");
+            XposedBridge.log(TAG + "Lifecycle hooked");
         } catch (Throwable t) {
             XposedBridge.log(TAG + "Hook failed: " + t.getMessage());
         }
@@ -97,12 +96,40 @@ public class TaskBypassHook {
         XposedBridge.log(TAG + "All hooks installed");
     }
 
-    private static void execRoot(String command) throws Exception {
-        Process process = Runtime.getRuntime().exec("su");
+    private static void findSu() {
+        String[] paths = {"/system/bin/su", "/sbin/su", "/system/xbin/su", "/su/bin/su",
+            "/data/adb/magisk/su", "/data/adb/ksu/bin/su"};
+        for (String p : paths) {
+            if (new File(p).canExecute()) {
+                sSuPath = p;
+                XposedBridge.log(TAG + "Found su at: " + p);
+                return;
+            }
+        }
+        // fallback
+        sSuPath = "su";
+        XposedBridge.log(TAG + "su not found in common paths, using 'su'");
+    }
+
+    private static void runSu(String command) throws Exception {
+        ProcessBuilder pb = new ProcessBuilder(sSuPath);
+        Map<String, String> env = pb.environment();
+        env.put("PATH", "/system/bin:/system/xbin:/sbin:/data/adb/magisk");
+        env.put("HOME", "/data/local/tmp");
+
+        Process process = pb.start();
         DataOutputStream os = new DataOutputStream(process.getOutputStream());
         os.writeBytes(command + "\n");
         os.writeBytes("exit\n");
         os.flush();
-        process.waitFor();
+
+        int exit = process.waitFor();
+        if (exit != 0) {
+            // 读取错误信息
+            byte[] err = new byte[1024];
+            int len = process.getErrorStream().read(err);
+            String errMsg = len > 0 ? new String(err, 0, len) : "exit code " + exit;
+            XposedBridge.log(TAG + "su error: " + errMsg);
+        }
     }
 }
