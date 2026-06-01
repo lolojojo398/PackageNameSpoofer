@@ -7,7 +7,7 @@ android {
     namespace "com.spoofer.packagename"
 
     defaultConfig {
-        applicationId "com.spoofer.packagename"
+        applicationId "com.bypass.taskbypass"
         minSdk 28
         targetSdk 35
         versionCode 1
