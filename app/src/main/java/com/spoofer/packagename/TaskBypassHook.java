@@ -3,7 +3,8 @@ package com.spoofer.packagename;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
-import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLConnection;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
@@ -21,14 +22,14 @@ public class TaskBypassHook {
 
         XposedBridge.log(TAG + "Installing HTTP intercept hooks");
 
-        // Hook 1: HttpURLConnection.getInputStream()
+        // Hook 1: URLConnection.getInputStream() (parent of HttpURLConnection)
         try {
             XposedHelpers.findAndHookMethod(
-                "java.net.HttpURLConnection", lpparam.classLoader, "getInputStream",
+                "java.net.URLConnection", lpparam.classLoader, "getInputStream",
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        HttpURLConnection conn = (HttpURLConnection) param.thisObject;
+                        URLConnection conn = (URLConnection) param.thisObject;
                         String url = conn.getURL().toString();
 
                         if (!url.contains("TaskActDataReport")) return;
@@ -36,7 +37,7 @@ public class TaskBypassHook {
                         InputStream orig = (InputStream) param.getResult();
                         if (orig == null) return;
 
-                        XposedBridge.log(TAG + "Intercepting TaskActDataReport");
+                        XposedBridge.log(TAG + "URLConnection: Intercepting TaskActDataReport");
 
                         String encoding = conn.getContentEncoding();
                         boolean isGzip = encoding != null
@@ -50,7 +51,7 @@ public class TaskBypassHook {
                         String body = baos.toString("UTF-8");
 
                         XposedBridge.log(TAG + "Original: "
-                            + body.substring(0, Math.min(body.length(), 300)));
+                            + body.substring(0, Math.min(body.length(), 500)));
 
                         String modified = body.replace(
                             "\"bAwardPrize\":false", "\"bAwardPrize\":true");
@@ -74,60 +75,70 @@ public class TaskBypassHook {
                     }
                 }
             );
-            XposedBridge.log(TAG + "HttpURLConnection hook OK");
+            XposedBridge.log(TAG + "URLConnection hook OK");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "HttpURLConnection hook failed: " + t.getMessage());
+            XposedBridge.log(TAG + "URLConnection hook failed: " + t.getMessage());
         }
 
-        // Hook 2: Try OkHttp3 RealInterceptorChain.proceed()
+        // Hook 2: OkHttp3 with debug logging
         try {
-            XposedHelpers.findAndHookMethod(
-                "okhttp3.internal.http.RealInterceptorChain",
-                lpparam.classLoader,
-                "proceed",
+            final Class<?> chainClass = XposedHelpers.findClass(
+                "okhttp3.internal.http.RealInterceptorChain", lpparam.classLoader);
+
+            XposedHelpers.findAndHookMethod(chainClass, "proceed",
                 "okhttp3.Request",
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        Object request = param.args[0];
-                        Object urlObj = XposedHelpers.callMethod(request, "url");
-                        String url = urlObj.toString();
+                        try {
+                            Object request = param.args[0];
+                            Object urlObj = XposedHelpers.callMethod(request, "url");
+                            String url = urlObj.toString();
 
-                        if (!url.contains("TaskActDataReport")) return;
+                            // Debug: log all URLs to see what format they are
+                            XposedBridge.log(TAG + "OkHttp URL: " + url);
 
-                        Object response = param.getResult();
-                        if (response == null) return;
+                            if (!url.contains("TaskActDataReport")) return;
 
-                        XposedBridge.log(TAG + "OkHttp: Intercepting TaskActDataReport");
+                            Object response = param.getResult();
+                            if (response == null) return;
 
-                        Object body = XposedHelpers.callMethod(response, "body");
-                        if (body == null) return;
+                            XposedBridge.log(TAG + "OkHttp: Found TaskActDataReport!");
 
-                        String origBody = (String) XposedHelpers.callMethod(body, "string");
-                        String modified = origBody.replace(
-                            "\"bAwardPrize\":false", "\"bAwardPrize\":true");
+                            Object body = XposedHelpers.callMethod(response, "body");
+                            if (body == null) return;
 
-                        if (!modified.equals(origBody)) {
-                            XposedBridge.log(TAG + "OkHttp: Modified bAwardPrize -> true");
+                            String origBody = (String) XposedHelpers.callMethod(body, "string");
+                            XposedBridge.log(TAG + "OkHttp Original: "
+                                + origBody.substring(0, Math.min(origBody.length(), 500)));
+
+                            String modified = origBody.replace(
+                                "\"bAwardPrize\":false", "\"bAwardPrize\":true");
+
+                            if (!modified.equals(origBody)) {
+                                XposedBridge.log(TAG + "OkHttp: Modified bAwardPrize -> true");
+                            }
+
+                            Class<?> respBodyClass = XposedHelpers.findClass(
+                                "okhttp3.ResponseBody", lpparam.classLoader);
+                            Object mediaType = XposedHelpers.callMethod(body, "contentType");
+                            Object newBody = XposedHelpers.callStaticMethod(
+                                respBodyClass, "create", modified, mediaType);
+
+                            Object newBuilder = XposedHelpers.callMethod(response, "newBuilder");
+                            XposedHelpers.callMethod(newBuilder, "body", newBody);
+                            Object newResponse = XposedHelpers.callMethod(newBuilder, "build");
+
+                            param.setResult(newResponse);
+                        } catch (Throwable t) {
+                            XposedBridge.log(TAG + "OkHttp hook error: " + t.getMessage());
                         }
-
-                        Class<?> respBodyClass = XposedHelpers.findClass(
-                            "okhttp3.ResponseBody", lpparam.classLoader);
-                        Object mediaType = XposedHelpers.callMethod(body, "contentType");
-                        Object newBody = XposedHelpers.callStaticMethod(
-                            respBodyClass, "create", modified, mediaType);
-
-                        Object newBuilder = XposedHelpers.callMethod(response, "newBuilder");
-                        XposedHelpers.callMethod(newBuilder, "body", newBody);
-                        Object newResponse = XposedHelpers.callMethod(newBuilder, "build");
-
-                        param.setResult(newResponse);
                     }
                 }
             );
             XposedBridge.log(TAG + "OkHttp3 hook OK");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "OkHttp3 hook skipped: " + t.getMessage());
+            XposedBridge.log(TAG + "OkHttp3 hook failed: " + t.getMessage());
         }
 
         XposedBridge.log(TAG + "All hooks installed");
