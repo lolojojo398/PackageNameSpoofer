@@ -3,10 +3,7 @@ package com.spoofer.packagename;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
-import java.io.IOException;
 import java.net.URLConnection;
-import java.util.zip.GZIPInputStream;
-import java.util.zip.GZIPOutputStream;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -29,15 +26,19 @@ public class TaskBypassHook {
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        URLConnection conn = (URLConnection) param.thisObject;
-                        String url = conn.getURL().toString();
-                        if (!url.contains("TaskActDataReport")) return;
+                        try {
+                            URLConnection conn = (URLConnection) param.thisObject;
+                            String url = conn.getURL().toString();
+                            if (!url.contains("TaskActDataReport")) return;
 
-                        InputStream orig = (InputStream) param.getResult();
-                        if (orig == null) return;
+                            InputStream orig = (InputStream) param.getResult();
+                            if (orig == null) return;
 
-                        XposedBridge.log(TAG + "URLConnection intercept: " + url);
-                        param.setResult(wrapStream(orig, conn.getContentEncoding()));
+                            XposedBridge.log(TAG + "URLConnection intercept: " + url);
+                            param.setResult(wrapStream(orig, conn.getContentEncoding()));
+                        } catch (Throwable t) {
+                            XposedBridge.log(TAG + "URLConnection error: " + t.getMessage());
+                        }
                     }
                 }
             );
@@ -47,45 +48,38 @@ public class TaskBypassHook {
         }
 
         // Hook 2: OkHttp3 RealInterceptorChain.proceed()
-        // Read request body in BEFORE to detect TaskActDataReport,
-        // modify response body in AFTER
         try {
             final Class<?> chainClass = XposedHelpers.findClass(
                 "okhttp3.internal.http.RealInterceptorChain", lpparam.classLoader);
-            final Class<?> reqBodyClass = XposedHelpers.findClass(
-                "okhttp3.RequestBody", lpparam.classLoader);
 
             XposedHelpers.findAndHookMethod(chainClass, "proceed",
                 "okhttp3.Request",
                 new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        // Read request body to check for TaskActDataReport
                         try {
                             Object request = param.args[0];
                             Object body = XposedHelpers.callMethod(request, "body");
-                            if (body == null) { param.setObjectExtra("isTask", false); return; }
+                            if (body == null) {
+                                param.setObjectExtra("isTask", false);
+                                return;
+                            }
 
-                            // Buffer the body so we can read it
-                            java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
-                            Object bufferedSink = XposedHelpers.callStaticMethod(
-                                XposedHelpers.findClass("okio.Okio", null),
-                                "buffer",
-                                XposedHelpers.callStaticMethod(
-                                    XposedHelpers.findClass("okio.Okio", null),
-                                    "sink", buf));
-                            XposedHelpers.callMethod(body, "writeTo", bufferedSink);
-                            XposedHelpers.callMethod(bufferedSink, "flush");
+                            // Use ByteArrayOutputStream instead of Okio
+                            ByteArrayOutputStream buf = new ByteArrayOutputStream();
+                            XposedHelpers.callMethod(body, "writeTo", buf);
                             String reqBody = buf.toString("UTF-8");
 
                             boolean isTask = reqBody.contains("TaskActDataReport");
                             param.setObjectExtra("isTask", isTask);
 
                             if (isTask) {
-                                XposedBridge.log(TAG + "Detected TaskActDataReport in request body");
+                                XposedBridge.log(TAG + "Detected TaskActDataReport!");
 
-                                // Create new request with re-readable body
+                                // Re-create request with re-readable body
                                 Object mediaType = XposedHelpers.callMethod(body, "contentType");
+                                Class<?> reqBodyClass = XposedHelpers.findClass(
+                                    "okhttp3.RequestBody", lpparam.classLoader);
                                 Object newBody = XposedHelpers.callStaticMethod(
                                     reqBodyClass, "create", mediaType, reqBody);
                                 Object newReq = XposedHelpers.callMethod(request, "newBuilder");
@@ -96,7 +90,7 @@ public class TaskBypassHook {
                             }
                         } catch (Throwable t) {
                             param.setObjectExtra("isTask", false);
-                            XposedBridge.log(TAG + "Request body read error: " + t.getMessage());
+                            XposedBridge.log(TAG + "Body read error: " + t.getMessage());
                         }
                     }
 
@@ -108,14 +102,14 @@ public class TaskBypassHook {
                         Object response = param.getResult();
                         if (response == null) return;
 
-                        XposedBridge.log(TAG + "OkHttp: Intercepting TaskActDataReport response");
+                        XposedBridge.log(TAG + "Intercepting TaskActDataReport response");
 
                         try {
                             Object body = XposedHelpers.callMethod(response, "body");
                             if (body == null) return;
 
                             String origBody = (String) XposedHelpers.callMethod(body, "string");
-                            XposedBridge.log(TAG + "Original: "
+                            XposedBridge.log(TAG + "Response: "
                                 + origBody.substring(0, Math.min(origBody.length(), 500)));
 
                             String modified = origBody.replace(
@@ -123,11 +117,9 @@ public class TaskBypassHook {
 
                             if (!modified.equals(origBody)) {
                                 XposedBridge.log(TAG + "Modified bAwardPrize -> true");
-                            } else {
-                                XposedBridge.log(TAG + "bAwardPrize not found or already true");
                             }
 
-                            // Build new response
+                            // Build new response with modified body
                             Class<?> respBodyClass = XposedHelpers.findClass(
                                 "okhttp3.ResponseBody", lpparam.classLoader);
                             Object mediaType = XposedHelpers.callMethod(body, "contentType");
@@ -155,7 +147,7 @@ public class TaskBypassHook {
 
     private static InputStream wrapStream(InputStream orig, String encoding) throws Exception {
         boolean isGzip = encoding != null && encoding.toLowerCase().contains("gzip");
-        InputStream in = isGzip ? new GZIPInputStream(orig) : orig;
+        InputStream in = isGzip ? new java.util.zip.GZIPInputStream(orig) : orig;
 
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         byte[] buf = new byte[4096];
@@ -173,7 +165,7 @@ public class TaskBypassHook {
         byte[] outBytes = modified.getBytes("UTF-8");
         if (isGzip) {
             ByteArrayOutputStream gzBuf = new ByteArrayOutputStream();
-            GZIPOutputStream gz = new GZIPOutputStream(gzBuf);
+            java.util.zip.GZIPOutputStream gz = new java.util.zip.GZIPOutputStream(gzBuf);
             gz.write(outBytes);
             gz.finish();
             outBytes = gzBuf.toByteArray();
