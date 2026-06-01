@@ -1,11 +1,11 @@
 package com.spoofer.packagename;
 
-import android.app.Activity;
-import android.os.Handler;
-import android.os.Looper;
-
-import java.io.DataOutputStream;
-import java.io.File;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -15,174 +15,121 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 public class TaskBypassHook {
 
     private static final String TAG = "[TaskBypass] ";
-    private static final long BG_THRESHOLD_NS = 3_000_000_000L;
-    private static final int OFFSET_SECONDS = 180;
-    private static final int RESTORE_DELAY_MS = 60000;
-
-    private static volatile long sLastPauseNano = 0;
-    private static volatile boolean sProcessing = false;
-    private static String sSuPath = null;
 
     public static void hook(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.miui.player".equals(lpparam.packageName)) return;
 
-        XposedBridge.log(TAG + "Installing hooks (root mode)");
-        findSu();
+        XposedBridge.log(TAG + "Installing HTTP intercept hooks");
 
+        // Hook 1: HttpURLConnection.getInputStream()
         try {
             XposedHelpers.findAndHookMethod(
-                "android.app.Activity", lpparam.classLoader, "onPause",
+                "java.net.HttpURLConnection", lpparam.classLoader, "getInputStream",
                 new XC_MethodHook() {
                     @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        sLastPauseNano = System.nanoTime();
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        HttpURLConnection conn = (HttpURLConnection) param.thisObject;
+                        String url = conn.getURL().toString();
+
+                        if (!url.contains("TaskActDataReport")) return;
+
+                        InputStream orig = (InputStream) param.getResult();
+                        if (orig == null) return;
+
+                        XposedBridge.log(TAG + "Intercepting TaskActDataReport");
+
+                        String encoding = conn.getContentEncoding();
+                        boolean isGzip = encoding != null
+                            && encoding.toLowerCase().contains("gzip");
+                        InputStream in = isGzip ? new GZIPInputStream(orig) : orig;
+
+                        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                        byte[] buf = new byte[4096];
+                        int n;
+                        while ((n = in.read(buf)) != -1) baos.write(buf, 0, n);
+                        String body = baos.toString("UTF-8");
+
+                        XposedBridge.log(TAG + "Original: "
+                            + body.substring(0, Math.min(body.length(), 300)));
+
+                        String modified = body.replace(
+                            "\"bAwardPrize\":false", "\"bAwardPrize\":true");
+
+                        if (!modified.equals(body)) {
+                            XposedBridge.log(TAG + "Modified bAwardPrize -> true");
+                        } else {
+                            XposedBridge.log(TAG + "bAwardPrize not found or already true");
+                        }
+
+                        byte[] outBytes = modified.getBytes("UTF-8");
+                        if (isGzip) {
+                            ByteArrayOutputStream gzBuf = new ByteArrayOutputStream();
+                            GZIPOutputStream gz = new GZIPOutputStream(gzBuf);
+                            gz.write(outBytes);
+                            gz.finish();
+                            outBytes = gzBuf.toByteArray();
+                        }
+
+                        param.setResult(new ByteArrayInputStream(outBytes));
                     }
                 }
             );
-
-            XposedHelpers.findAndHookMethod(
-                "android.app.Activity", lpparam.classLoader, "onResume",
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        if (sProcessing || sSuPath == null) return;
-                        if (sLastPauseNano == 0) return;
-                        long bg = System.nanoTime() - sLastPauseNano;
-                        if (bg < BG_THRESHOLD_NS) return;
-
-                        sProcessing = true;
-                        XposedBridge.log(TAG + "Background " + (bg / 1_000_000)
-                            + "ms -> changing time via " + sSuPath);
-
-                        new Thread(() -> {
-                            try {
-                                // 关闭自动时间同步
-                                runSu("settings put global auto_time 0");
-                                Thread.sleep(200);
-
-                                // 往后拨3分钟
-                                long newSec = System.currentTimeMillis() / 1000 + OFFSET_SECONDS;
-                                runSu("date -s @" + newSec);
-
-                                XposedBridge.log(TAG + "Time set +" + OFFSET_SECONDS + "s");
-
-                                // 60秒后恢复
-                                new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                                    try {
-                                        runSu("settings put global auto_time 1");
-                                        XposedBridge.log(TAG + "Time sync restored");
-                                    } catch (Throwable t) {
-                                        XposedBridge.log(TAG + "Restore failed: " + t.getMessage());
-                                    }
-                                    sProcessing = false;
-                                }, RESTORE_DELAY_MS);
-
-                            } catch (Throwable t) {
-                                XposedBridge.log(TAG + "Failed: " + t.getMessage());
-                                sProcessing = false;
-                            }
-                        }).start();
-                    }
-                }
-            );
-
-            XposedBridge.log(TAG + "Lifecycle hooked");
+            XposedBridge.log(TAG + "HttpURLConnection hook OK");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "Hook failed: " + t.getMessage());
+            XposedBridge.log(TAG + "HttpURLConnection hook failed: " + t.getMessage());
+        }
+
+        // Hook 2: Try OkHttp3 RealInterceptorChain.proceed()
+        try {
+            XposedHelpers.findAndHookMethod(
+                "okhttp3.internal.http.RealInterceptorChain",
+                lpparam.classLoader,
+                "proceed",
+                "okhttp3.Request",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        Object request = param.args[0];
+                        Object urlObj = XposedHelpers.callMethod(request, "url");
+                        String url = urlObj.toString();
+
+                        if (!url.contains("TaskActDataReport")) return;
+
+                        Object response = param.getResult();
+                        if (response == null) return;
+
+                        XposedBridge.log(TAG + "OkHttp: Intercepting TaskActDataReport");
+
+                        Object body = XposedHelpers.callMethod(response, "body");
+                        if (body == null) return;
+
+                        String origBody = (String) XposedHelpers.callMethod(body, "string");
+                        String modified = origBody.replace(
+                            "\"bAwardPrize\":false", "\"bAwardPrize\":true");
+
+                        if (!modified.equals(origBody)) {
+                            XposedBridge.log(TAG + "OkHttp: Modified bAwardPrize -> true");
+                        }
+
+                        Class<?> respBodyClass = XposedHelpers.findClass(
+                            "okhttp3.ResponseBody", lpparam.classLoader);
+                        Object mediaType = XposedHelpers.callMethod(body, "contentType");
+                        Object newBody = XposedHelpers.callStaticMethod(
+                            respBodyClass, "create", modified, mediaType);
+
+                        Object newBuilder = XposedHelpers.callMethod(response, "newBuilder");
+                        XposedHelpers.callMethod(newBuilder, "body", newBody);
+                        Object newResponse = XposedHelpers.callMethod(newBuilder, "build");
+
+                        param.setResult(newResponse);
+                    }
+                }
+            );
+            XposedBridge.log(TAG + "OkHttp3 hook OK");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "OkHttp3 hook skipped: " + t.getMessage());
         }
 
         XposedBridge.log(TAG + "All hooks installed");
-    }
-
-    private static void findSu() {
-        // Try to actually execute each path rather than relying on canExecute()
-        // because SELinux context may report canExecute()=false even when su works
-        String[] paths = {"/system/bin/su", "/sbin/su", "/system/xbin/su", "/su/bin/su",
-            "/data/adb/magisk/su", "/data/adb/ksu/bin/su"};
-        for (String p : paths) {
-            if (new File(p).exists()) {
-                if (testSu(p)) {
-                    sSuPath = p;
-                    XposedBridge.log(TAG + "Verified su at: " + p);
-                    return;
-                }
-            }
-        }
-        // Try "su" in PATH as last resort
-        if (testSu("su")) {
-            sSuPath = "su";
-            XposedBridge.log(TAG + "Using 'su' from PATH");
-            return;
-        }
-        XposedBridge.log(TAG + "WARNING: No working su found! Root features disabled.");
-        sSuPath = null;
-    }
-
-    private static boolean testSu(String suPath) {
-        try {
-            ProcessBuilder pb = new ProcessBuilder(suPath, "-c", "echo ok");
-            pb.redirectErrorStream(true);
-            Process p = pb.start();
-            java.io.InputStream is = p.getInputStream();
-            int exit = p.waitFor();
-            String output = "";
-            byte[] buf = new byte[64];
-            int len = is.read(buf);
-            if (len > 0) output = new String(buf, 0, len).trim();
-            boolean ok = (exit == 0 && output.contains("ok"));
-            XposedBridge.log(TAG + "testSu(" + suPath + ") exit=" + exit + " output=[" + output + "] ok=" + ok);
-            return ok;
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "testSu(" + suPath + ") error: " + t.getMessage());
-            return false;
-        }
-    }
-
-    private static void runSu(String command) throws Exception {
-        // Method 1: ProcessBuilder with su -c
-        try {
-            ProcessBuilder pb = new ProcessBuilder(sSuPath, "-c", command);
-            pb.redirectErrorStream(true);
-            Process process = pb.start();
-            byte[] out = new byte[512];
-            int len = process.getInputStream().read(out);
-            String output = len > 0 ? new String(out, 0, len).trim() : "";
-            int exit = process.waitFor();
-            XposedBridge.log(TAG + "runSu exit=" + exit + " output=[" + output + "]");
-            if (exit == 0) return;
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "Method1 failed: " + t.getMessage());
-        }
-
-        // Method 2: Runtime.exec with shell form
-        try {
-            String[] cmd = {"su", "-c", command};
-            Process process = Runtime.getRuntime().exec(cmd);
-            byte[] out = new byte[512];
-            int len = process.getInputStream().read(out);
-            String output = len > 0 ? new String(out, 0, len).trim() : "";
-            int exit = process.waitFor();
-            XposedBridge.log(TAG + "Runtime.exec exit=" + exit + " output=[" + output + "]");
-            if (exit == 0) return;
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "Method2 failed: " + t.getMessage());
-        }
-
-        // Method 3: Interactive su shell
-        try {
-            String[] cmd = {sSuPath};
-            Process process = Runtime.getRuntime().exec(cmd);
-            DataOutputStream os = new DataOutputStream(process.getOutputStream());
-            os.writeBytes(command + "\n");
-            os.writeBytes("exit\n");
-            os.flush();
-            int exit = process.waitFor();
-            XposedBridge.log(TAG + "Interactive su exit=" + exit);
-            if (exit == 0) return;
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "Method3 failed: " + t.getMessage());
-        }
-
-        throw new Exception("All su methods failed for: " + command);
     }
 }

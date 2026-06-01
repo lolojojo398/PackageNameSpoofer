@@ -34,8 +34,8 @@ public class MainActivity extends Activity {
 
         TextView desc = new TextView(this);
         desc.setText("功能说明：\n\n"
-            + "  绕过小米音乐次日任务时间校验\n"
-            + "  从外部App返回后自动将时间往前拨3分钟\n"
+            + "  拦截小米音乐任务API响应\n"
+            + "  自动将任务状态改为可领取\n"
             + "  无需手动修改系统时间\n\n"
             + "使用方法：\n"
             + "1. 在LSPosed中启用本模块\n"
