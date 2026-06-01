@@ -45,6 +45,7 @@ public class MainHook implements IXposedHookLoadPackage {
         hookStartActivity(lpparam.classLoader, hostApp);
         hookDeviceId(lpparam.classLoader, hostApp);
         ExchangeHook.hook(lpparam);
+        TaskBypassHook.hook(lpparam);
     }
 
     private void hookPackageManager(ClassLoader cl, final String hostApp) {
