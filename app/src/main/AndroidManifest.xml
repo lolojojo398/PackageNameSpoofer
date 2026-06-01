@@ -16,6 +16,7 @@
             </intent-filter>
         </activity>
 
+        <!-- Xposed模块元数据 -->
         <meta-data
             android:name="xposedmodule"
             android:value="true" />
