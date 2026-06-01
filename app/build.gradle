@@ -4,7 +4,7 @@ plugins {
 
 android {
     compileSdk 35
-    namespace "com.spoofer.packagename"
+    namespace "com.spoofer.har"
 
     defaultConfig {
         applicationId "com.spoofer.packagename"

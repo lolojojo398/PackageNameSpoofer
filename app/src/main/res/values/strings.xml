@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">HAR发包工具</string>
+    <string name="app_name">TaskBypass</string>
+    <string name="module_desc">绕过QQ音乐次日任务的时间校验，返回即可领取</string>
 </resources>
