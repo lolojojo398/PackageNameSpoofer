@@ -13,17 +13,22 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 public class TaskBypassHook {
 
     private static final String TAG = "[TaskBypass] ";
-    private static String sOkioBufferClass = null;
+    private static Class<?> sOkioBufferClass = null;
 
     public static void hook(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.miui.player".equals(lpparam.packageName)) return;
 
         XposedBridge.log(TAG + "Installing HTTP intercept hooks");
 
-        // Find Okio class name (may be repackaged)
-        findOkioClass(lpparam.classLoader);
+        // Find okio.Buffer class
+        try {
+            sOkioBufferClass = XposedHelpers.findClass("okio.Buffer", lpparam.classLoader);
+            XposedBridge.log(TAG + "Found okio.Buffer");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "okio.Buffer not found: " + t.getMessage());
+        }
 
-        // Hook 1: URLConnection.getInputStream()
+        // Hook URLConnection.getInputStream()
         try {
             XposedHelpers.findAndHookMethod(
                 "java.net.URLConnection", lpparam.classLoader, "getInputStream",
@@ -34,10 +39,8 @@ public class TaskBypassHook {
                             URLConnection conn = (URLConnection) param.thisObject;
                             String url = conn.getURL().toString();
                             if (!url.contains("TaskActDataReport")) return;
-
                             InputStream orig = (InputStream) param.getResult();
                             if (orig == null) return;
-
                             XposedBridge.log(TAG + "URLConnection intercept: " + url);
                             param.setResult(wrapStream(orig, conn.getContentEncoding()));
                         } catch (Throwable t) {
@@ -51,7 +54,7 @@ public class TaskBypassHook {
             XposedBridge.log(TAG + "URLConnection hook failed: " + t.getMessage());
         }
 
-        // Hook 2: OkHttp3 RealInterceptorChain.proceed()
+        // Hook OkHttp3/4 RealInterceptorChain.proceed()
         try {
             final Class<?> chainClass = XposedHelpers.findClass(
                 "okhttp3.internal.http.RealInterceptorChain", lpparam.classLoader);
@@ -69,7 +72,8 @@ public class TaskBypassHook {
                                 return;
                             }
 
-                            String reqBody = readRequestBody(body, lpparam.classLoader);
+                            // Read request body using okio.Buffer
+                            String reqBody = readWithOkioBuffer(body);
                             if (reqBody == null) {
                                 param.setObjectExtra("isTask", false);
                                 return;
@@ -81,11 +85,13 @@ public class TaskBypassHook {
                             if (isTask) {
                                 XposedBridge.log(TAG + "Detected TaskActDataReport!");
 
+                                // Re-create body so it can be read again
                                 Object mediaType = XposedHelpers.callMethod(body, "contentType");
                                 Class<?> reqBodyClass = XposedHelpers.findClass(
                                     "okhttp3.RequestBody", lpparam.classLoader);
+                                // OkHttp4 Kotlin: RequestBody.create(String, MediaType)
                                 Object newBody = XposedHelpers.callStaticMethod(
-                                    reqBodyClass, "create", mediaType, reqBody);
+                                    reqBodyClass, "create", reqBody, mediaType);
                                 Object newReq = XposedHelpers.callMethod(request, "newBuilder");
                                 newReq = XposedHelpers.callMethod(newReq, "method",
                                     XposedHelpers.callMethod(request, "method"), newBody);
@@ -94,7 +100,7 @@ public class TaskBypassHook {
                             }
                         } catch (Throwable t) {
                             param.setObjectExtra("isTask", false);
-                            XposedBridge.log(TAG + "Body read error: " + t.getMessage());
+                            XposedBridge.log(TAG + "Before error: " + t.getMessage());
                         }
                     }
 
@@ -112,7 +118,32 @@ public class TaskBypassHook {
                             Object body = XposedHelpers.callMethod(response, "body");
                             if (body == null) return;
 
-                            String origBody = readResponseBody(body);
+                            // Try multiple methods to read response body
+                            String origBody = null;
+
+                            // Method 1: string()
+                            try {
+                                origBody = (String) XposedHelpers.callMethod(body, "string");
+                            } catch (Throwable t1) {
+                                XposedBridge.log(TAG + "string() failed: " + t1.getMessage());
+
+                                // Method 2: bytes()
+                                try {
+                                    byte[] bytes = (byte[]) XposedHelpers.callMethod(body, "bytes");
+                                    origBody = new String(bytes, "UTF-8");
+                                } catch (Throwable t2) {
+                                    XposedBridge.log(TAG + "bytes() failed: " + t2.getMessage());
+
+                                    // Method 3: source() + readUtf8()
+                                    try {
+                                        Object source = XposedHelpers.callMethod(body, "source");
+                                        origBody = (String) XposedHelpers.callMethod(source, "readUtf8");
+                                    } catch (Throwable t3) {
+                                        XposedBridge.log(TAG + "source().readUtf8() failed: " + t3.getMessage());
+                                    }
+                                }
+                            }
+
                             if (origBody == null) {
                                 XposedBridge.log(TAG + "Could not read response body");
                                 return;
@@ -128,16 +159,15 @@ public class TaskBypassHook {
                                 XposedBridge.log(TAG + "Modified bAwardPrize -> true");
                             }
 
+                            // Build new response
                             Class<?> respBodyClass = XposedHelpers.findClass(
                                 "okhttp3.ResponseBody", lpparam.classLoader);
                             Object mediaType = XposedHelpers.callMethod(body, "contentType");
                             Object newBody = XposedHelpers.callStaticMethod(
                                 respBodyClass, "create", modified, mediaType);
-
                             Object newBuilder = XposedHelpers.callMethod(response, "newBuilder");
                             XposedHelpers.callMethod(newBuilder, "body", newBody);
                             Object newResponse = XposedHelpers.callMethod(newBuilder, "build");
-
                             param.setResult(newResponse);
                         } catch (Throwable t) {
                             XposedBridge.log(TAG + "Response error: " + t.getMessage());
@@ -153,103 +183,16 @@ public class TaskBypassHook {
         XposedBridge.log(TAG + "All hooks installed");
     }
 
-    private static void findOkioClass(ClassLoader cl) {
-        // Try common Okio package names (may be repackaged)
-        String[] candidates = {
-            "okio.Buffer",
-            "okio.Okio",
-            "com.tencent.mars.okio.Buffer",
-            "com.tencent.mars.okio.Okio",
-            "com.squareup.okio.Buffer",
-            "com.squareup.okio.Okio"
-        };
-        for (String name : candidates) {
-            try {
-                Class<?> c = cl.loadClass(name);
-                sOkioBufferClass = name.endsWith("Buffer") ? name : null;
-                XposedBridge.log(TAG + "Found Okio class: " + name);
-                return;
-            } catch (ClassNotFoundException ignored) {}
-        }
-
-        // Try to find by searching classloader for Buffer class
+    private static String readWithOkioBuffer(Object body) {
+        if (sOkioBufferClass == null) return null;
         try {
-            // okhttp3.internal.io.FileSystem uses Okio - trace its dependencies
-            Class<?> fsClass = cl.loadClass("okhttp3.internal.io.FileSystem");
-            XposedBridge.log(TAG + "Found FileSystem: " + fsClass.getName());
-        } catch (Throwable ignored) {}
-
-        XposedBridge.log(TAG + "Okio class not found, will try direct writeTo");
-    }
-
-    private static String readRequestBody(Object body, ClassLoader cl) {
-        // Method 1: Try writeTo with ByteArrayOutputStream (if writeTo accepts OutputStream)
-        try {
-            ByteArrayOutputStream buf = new ByteArrayOutputStream();
-            XposedHelpers.callMethod(body, "writeTo", buf);
-            return buf.toString("UTF-8");
+            Object buffer = sOkioBufferClass.newInstance();
+            XposedHelpers.callMethod(body, "writeTo", buffer);
+            return (String) XposedHelpers.callMethod(buffer, "readUtf8");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "writeTo(OutputStream) failed: " + t.getMessage());
+            XposedBridge.log(TAG + "Okio buffer read failed: " + t.getMessage());
+            return null;
         }
-
-        // Method 2: Try writeTo with Okio Buffer if we found the class
-        if (sOkioBufferClass != null) {
-            try {
-                Class<?> bufferClass = XposedHelpers.findClass(sOkioBufferClass, cl);
-                Object buffer = bufferClass.newInstance();
-                // Find the BufferedSink wrapper - try okio.Okio.buffer(buffer)
-                String okioClassName = sOkioBufferClass.replace("Buffer", "Okio");
-                try {
-                    Class<?> okioClass = XposedHelpers.findClass(okioClassName, cl);
-                    Object sink = XposedHelpers.callStaticMethod(okioClass, "buffer", buffer);
-                    XposedHelpers.callMethod(body, "writeTo", sink);
-                    return (String) XposedHelpers.callMethod(buffer, "readUtf8");
-                } catch (Throwable t2) {
-                    // Try direct writeTo with buffer
-                    XposedHelpers.callMethod(body, "writeTo", buffer);
-                    return (String) XposedHelpers.callMethod(buffer, "readUtf8");
-                }
-            } catch (Throwable t) {
-                XposedBridge.log(TAG + "Okio Buffer failed: " + t.getMessage());
-            }
-        }
-
-        // Method 3: Try to read via contentLength + reflection
-        try {
-            long len = (long) XposedHelpers.callMethod(body, "contentLength");
-            XposedBridge.log(TAG + "Body contentLength: " + len);
-        } catch (Throwable ignored) {}
-
-        return null;
-    }
-
-    private static String readResponseBody(Object body) {
-        // Try string() first
-        try {
-            return (String) XposedHelpers.callMethod(body, "string");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "body.string() failed: " + t.getMessage());
-        }
-
-        // Try bytes()
-        try {
-            byte[] bytes = (byte[]) XposedHelpers.callMethod(body, "bytes");
-            return new String(bytes, "UTF-8");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "body.bytes() failed: " + t.getMessage());
-        }
-
-        // Try source() + readUtf8()
-        if (sOkioBufferClass != null) {
-            try {
-                Object source = XposedHelpers.callMethod(body, "source");
-                return (String) XposedHelpers.callMethod(source, "readUtf8");
-            } catch (Throwable t) {
-                XposedBridge.log(TAG + "body.source().readUtf8() failed: " + t.getMessage());
-            }
-        }
-
-        return null;
     }
 
     private static InputStream wrapStream(InputStream orig, String encoding) throws Exception {
