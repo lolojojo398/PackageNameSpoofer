@@ -6,8 +6,6 @@ import android.os.Looper;
 
 import java.io.DataOutputStream;
 import java.io.File;
-import java.util.HashMap;
-import java.util.Map;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -97,39 +95,94 @@ public class TaskBypassHook {
     }
 
     private static void findSu() {
+        // Try to actually execute each path rather than relying on canExecute()
+        // because SELinux context may report canExecute()=false even when su works
         String[] paths = {"/system/bin/su", "/sbin/su", "/system/xbin/su", "/su/bin/su",
             "/data/adb/magisk/su", "/data/adb/ksu/bin/su"};
         for (String p : paths) {
-            if (new File(p).canExecute()) {
-                sSuPath = p;
-                XposedBridge.log(TAG + "Found su at: " + p);
-                return;
+            if (new File(p).exists()) {
+                if (testSu(p)) {
+                    sSuPath = p;
+                    XposedBridge.log(TAG + "Verified su at: " + p);
+                    return;
+                }
             }
         }
-        // fallback
-        sSuPath = "su";
-        XposedBridge.log(TAG + "su not found in common paths, using 'su'");
+        // Try "su" in PATH as last resort
+        if (testSu("su")) {
+            sSuPath = "su";
+            XposedBridge.log(TAG + "Using 'su' from PATH");
+            return;
+        }
+        XposedBridge.log(TAG + "WARNING: No working su found! Root features disabled.");
+        sSuPath = null;
+    }
+
+    private static boolean testSu(String suPath) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder(suPath, "-c", "echo ok");
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            java.io.InputStream is = p.getInputStream();
+            int exit = p.waitFor();
+            String output = "";
+            byte[] buf = new byte[64];
+            int len = is.read(buf);
+            if (len > 0) output = new String(buf, 0, len).trim();
+            boolean ok = (exit == 0 && output.contains("ok"));
+            XposedBridge.log(TAG + "testSu(" + suPath + ") exit=" + exit + " output=[" + output + "] ok=" + ok);
+            return ok;
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "testSu(" + suPath + ") error: " + t.getMessage());
+            return false;
+        }
     }
 
     private static void runSu(String command) throws Exception {
-        ProcessBuilder pb = new ProcessBuilder(sSuPath);
-        Map<String, String> env = pb.environment();
-        env.put("PATH", "/system/bin:/system/xbin:/sbin:/data/adb/magisk");
-        env.put("HOME", "/data/local/tmp");
-
-        Process process = pb.start();
-        DataOutputStream os = new DataOutputStream(process.getOutputStream());
-        os.writeBytes(command + "\n");
-        os.writeBytes("exit\n");
-        os.flush();
-
-        int exit = process.waitFor();
-        if (exit != 0) {
-            // 读取错误信息
-            byte[] err = new byte[1024];
-            int len = process.getErrorStream().read(err);
-            String errMsg = len > 0 ? new String(err, 0, len) : "exit code " + exit;
-            XposedBridge.log(TAG + "su error: " + errMsg);
+        // Method 1: ProcessBuilder with su -c
+        try {
+            ProcessBuilder pb = new ProcessBuilder(sSuPath, "-c", command);
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            byte[] out = new byte[512];
+            int len = process.getInputStream().read(out);
+            String output = len > 0 ? new String(out, 0, len).trim() : "";
+            int exit = process.waitFor();
+            XposedBridge.log(TAG + "runSu exit=" + exit + " output=[" + output + "]");
+            if (exit == 0) return;
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "Method1 failed: " + t.getMessage());
         }
+
+        // Method 2: Runtime.exec with shell form
+        try {
+            String[] cmd = {"su", "-c", command};
+            Process process = Runtime.getRuntime().exec(cmd);
+            byte[] out = new byte[512];
+            int len = process.getInputStream().read(out);
+            String output = len > 0 ? new String(out, 0, len).trim() : "";
+            int exit = process.waitFor();
+            XposedBridge.log(TAG + "Runtime.exec exit=" + exit + " output=[" + output + "]");
+            if (exit == 0) return;
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "Method2 failed: " + t.getMessage());
+        }
+
+        // Method 3: Interactive su shell
+        try {
+            String[] cmd = {sSuPath};
+            Process process = Runtime.getRuntime().exec(cmd);
+            DataOutputStream os = new DataOutputStream(process.getOutputStream());
+            os.writeBytes(command + "\n");
+            os.writeBytes("exit\n");
+            os.flush();
+            int exit = process.waitFor();
+            XposedBridge.log(TAG + "Interactive su exit=" + exit);
+            if (exit == 0) return;
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "Method3 failed: " + t.getMessage());
+        }
+
+        throw new Exception("All su methods failed for: " + command);
     }
 }
