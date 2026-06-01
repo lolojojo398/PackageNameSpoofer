@@ -22,7 +22,7 @@
             android:value="true" />
         <meta-data
             android:name="xposeddescription"
-            android:value="绕过QQ音乐次日任务时间校验" />
+            android:value="绕过小米音乐(QQ音乐)次日任务时间校验，从外部返回后自动将时间往前拨3分钟" />
         <meta-data
             android:name="xposedminversion"
             android:value="82" />

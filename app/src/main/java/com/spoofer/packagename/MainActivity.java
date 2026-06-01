@@ -19,7 +19,7 @@ public class MainActivity extends Activity {
         layout.setBackgroundColor(Color.parseColor("#1a1a2e"));
 
         TextView title = new TextView(this);
-        title.setText("包名伪装模块");
+        title.setText("TaskBypass");
         title.setTextSize(28);
         title.setTextColor(Color.parseColor("#e94560"));
         title.setGravity(Gravity.CENTER);
@@ -34,13 +34,15 @@ public class MainActivity extends Activity {
 
         TextView desc = new TextView(this);
         desc.setText("功能说明：\n\n"
-            + "  所有应用查询都会返回已安装\n"
-            + "  让广告任务直接跳过下载步骤\n"
-            + "  无需手动修改包名\n\n"
+            + "  绕过小米音乐次日任务时间校验\n"
+            + "  从外部App返回后自动将时间往前拨3分钟\n"
+            + "  无需手动修改系统时间\n\n"
             + "使用方法：\n"
             + "1. 在LSPosed中启用本模块\n"
-            + "2. 勾选目标应用（如音乐APP）\n"
-            + "3. 重启手机或重启目标应用");
+            + "2. 勾选 com.miui.player\n"
+            + "3. 重启小米音乐\n"
+            + "4. 点击去浏览 → 跳转外部App → 返回\n"
+            + "5. 任务自动变为「去领取」");
         desc.setTextSize(16);
         desc.setTextColor(Color.parseColor("#aaaaaa"));
         desc.setGravity(Gravity.CENTER);
