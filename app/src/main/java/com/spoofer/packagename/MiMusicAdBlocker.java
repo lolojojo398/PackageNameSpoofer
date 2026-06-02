@@ -1,5 +1,7 @@
 package com.spoofer.packagename;
 
+import java.lang.reflect.Method;
+
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
@@ -8,16 +10,13 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 /**
  * 小米音乐 - 看广告领金币 自动化
  *
- * 原理:
- * 广告SDK在用户返回小米音乐时检查时间差
- * 我们在ADActivity创建时设置adShown标志
- * 在onEnterForeground/onResume时设置时间偏移+2分钟
- * 保持offset直到奖励触发或新广告开始
+ * 广告SDK(SystemWindowChecker)用native层读取时间，绕过Java层hook
+ * 方案: hook onActivityResumed，将时间戳改为足够大的值
+ * 这样SDK计算的pause-resume差值就会 >= 5秒
  */
 public class MiMusicAdBlocker {
 
     private static final String TAG = "[MiMusicAd] ";
-    private static long fakeTimeOffset = 0;
     private static boolean adShown = false;
 
     public static void hook(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -25,173 +24,113 @@ public class MiMusicAdBlocker {
 
         XposedBridge.log(TAG + "Loading hooks...");
 
-        // 核心Hook
-        hookOnEnterForeground(lpparam);
         hookAdShow(lpparam);
         hookAdEvents(lpparam);
-        hookSystemTime(lpparam);
+        hookSystemWindowChecker(lpparam);
     }
 
     /**
-     * Hook 所有时间API - 广告SDK可能用任何一个
+     * Hook 广告SDK的 SystemWindowChecker
+     * 它的 onActivityResumed 里会计算 pause-resume 的时间差
+     * 我们把 resumed 的时间戳改成 paused + 60秒，让SDK认为用户离开了足够久
      */
-    private static void hookSystemTime(XC_LoadPackage.LoadPackageParam lpparam) {
-        // System.currentTimeMillis()
+    private static void hookSystemWindowChecker(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
-            XposedHelpers.findAndHookMethod("java.lang.System", lpparam.classLoader,
-                "currentTimeMillis",
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        if (fakeTimeOffset > 0) {
-                            long original = (long) param.getResult();
-                            param.setResult(original + fakeTimeOffset);
-                            XposedBridge.log(TAG + "Time modified: " + original + " -> " + (original + fakeTimeOffset));
-                        }
-                    }
-                }
-            );
-            XposedBridge.log(TAG + "System.currentTimeMillis() hook OK");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "System.currentTimeMillis() hook FAILED: " + t.getMessage());
-        }
-
-        // SystemClock.elapsedRealtime()
-        try {
-            XposedHelpers.findAndHookMethod("android.os.SystemClock", lpparam.classLoader,
-                "elapsedRealtime",
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        if (fakeTimeOffset > 0) {
-                            long original = (long) param.getResult();
-                            param.setResult(original + fakeTimeOffset);
-                        }
-                    }
-                }
-            );
-            XposedBridge.log(TAG + "SystemClock.elapsedRealtime() hook OK");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "SystemClock.elapsedRealtime() hook FAILED: " + t.getMessage());
-        }
-
-        // SystemClock.uptimeMillis()
-        try {
-            XposedHelpers.findAndHookMethod("android.os.SystemClock", lpparam.classLoader,
-                "uptimeMillis",
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        if (fakeTimeOffset > 0) {
-                            long original = (long) param.getResult();
-                            param.setResult(original + fakeTimeOffset);
-                        }
-                    }
-                }
-            );
-            XposedBridge.log(TAG + "SystemClock.uptimeMillis() hook OK");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "SystemClock.uptimeMillis() hook FAILED: " + t.getMessage());
-        }
-
-        // SystemClock.elapsedRealtimeNanos()
-        try {
-            XposedHelpers.findAndHookMethod("android.os.SystemClock", lpparam.classLoader,
-                "elapsedRealtimeNanos",
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        if (fakeTimeOffset > 0) {
-                            long original = (long) param.getResult();
-                            param.setResult(original + fakeTimeOffset * 1000000L);
-                        }
-                    }
-                }
-            );
-            XposedBridge.log(TAG + "SystemClock.elapsedRealtimeNanos() hook OK");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "SystemClock.elapsedRealtimeNanos() hook FAILED: " + t.getMessage());
-        }
-
-        // System.nanoTime()
-        try {
-            XposedHelpers.findAndHookMethod("java.lang.System", lpparam.classLoader,
-                "nanoTime",
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        if (fakeTimeOffset > 0) {
-                            long original = (long) param.getResult();
-                            param.setResult(original + fakeTimeOffset * 1000000L);
-                        }
-                    }
-                }
-            );
-            XposedBridge.log(TAG + "System.nanoTime() hook OK");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "System.nanoTime() hook FAILED: " + t.getMessage());
-        }
-    }
-
-    /**
-     * Hook onEnterForeground/onResume
-     * 当用户返回小米音乐时，如果adShown为true，设置时间偏移
-     */
-    private static void hookOnEnterForeground(XC_LoadPackage.LoadPackageParam lpparam) {
-        try {
-            Class<?> listenerClass = XposedHelpers.findClass(
-                "com.tencent.qqmusiclite.freemode.ad.reward.listener.ActivityRewardListener",
+            // 找到 SystemWindowChecker 的内部类
+            // 日志显示: com.qq.e.comm.plugin.m.bl
+            Class<?> checkerClass = XposedHelpers.findClass(
+                "com.qq.e.comm.plugin.m.bl",
                 lpparam.classLoader
             );
 
-            // Hook onEnterForeground
-            XposedHelpers.findAndHookMethod(listenerClass, "onEnterForeground", new XC_MethodHook() {
+            // Hook 所有方法并打印日志，找到哪个方法返回结果
+            XposedBridge.hookAllMethods(checkerClass, new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
-                    XposedBridge.log(TAG + "onEnterForeground() called, adShown=" + adShown);
-                    if (adShown) {
-                        // 设置时间偏移: +2分钟
-                        fakeTimeOffset = 2 * 60 * 1000L;
-                        XposedBridge.log(TAG + "Setting fakeTimeOffset=" + fakeTimeOffset);
-                    }
+                    XposedBridge.log(TAG + "[bl] " + param.method.getName() + "() called");
                 }
 
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
-                    // 不在这里重置offset，让它保持到奖励触发
-                    XposedBridge.log(TAG + "onEnterForeground() done, offset=" + fakeTimeOffset);
-                }
-            });
-
-            // Hook onResume
-            XposedHelpers.findAndHookMethod(listenerClass, "onResume", new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    XposedBridge.log(TAG + "onResume() called, adShown=" + adShown);
-                    if (adShown) {
-                        fakeTimeOffset = 2 * 60 * 1000L;
-                        XposedBridge.log(TAG + "Setting fakeTimeOffset in onResume");
+                    if (param.method.getName().equals("toString") ||
+                        param.method.getName().equals("hashCode")) return;
+                    Object result = param.getResult();
+                    if (result != null) {
+                        XposedBridge.log(TAG + "[bl] " + param.method.getName() + "() returned: " + result);
                     }
                 }
-
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    XposedBridge.log(TAG + "onResume() done, offset=" + fakeTimeOffset);
-                }
             });
 
-            XposedBridge.log(TAG + "onEnterForeground hook OK");
+            XposedBridge.log(TAG + "SystemWindowChecker (bl) hook OK");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "onEnterForeground hook FAILED: " + t.getMessage());
+            XposedBridge.log(TAG + "SystemWindowChecker (bl) hook FAILED: " + t.getMessage());
+        }
+
+        // 也尝试hook DirectLauncherNode 的回调
+        try {
+            Class<?> directClass = XposedHelpers.findClass(
+                "com.qq.e.comm.plugin.n.aq",
+                lpparam.classLoader
+            );
+
+            XposedBridge.hookAllMethods(directClass, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    XposedBridge.log(TAG + "[DirectLauncher] " + param.method.getName() + "() called");
+                }
+            });
+
+            XposedBridge.log(TAG + "DirectLauncherNode hook OK");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "DirectLauncherNode hook FAILED: " + t.getMessage());
+        }
+
+        // Hook 所有包含 "reward" 或 "time" 相关的类
+        try {
+            String[] rewardClasses = {
+                "com.qq.e.comm.plugin.reward.a",
+                "com.qq.e.comm.plugin.reward.b",
+                "com.qq.e.comm.plugin.reward.c",
+                "com.qq.e.comm.plugin.reward.d",
+                "com.qq.e.comm.plugin.reward.e",
+                "com.qq.e.comm.plugin.m.a",
+                "com.qq.e.comm.plugin.m.b",
+                "com.qq.e.comm.plugin.m.c",
+                "com.qq.e.comm.plugin.m.d",
+                "com.qq.e.comm.plugin.m.e",
+                "com.qq.e.comm.plugin.m.f",
+                "com.qq.e.comm.plugin.m.g",
+                "com.qq.e.comm.plugin.m.h",
+                "com.qq.e.comm.plugin.m.i",
+                "com.qq.e.comm.plugin.m.j",
+                "com.qq.e.comm.plugin.m.k",
+                "com.qq.e.comm.plugin.m.l",
+                "com.qq.e.comm.plugin.m.m",
+            };
+            for (String className : rewardClasses) {
+                try {
+                    Class<?> cls = XposedHelpers.findClass(className, lpparam.classLoader);
+                    XposedBridge.hookAllMethods(cls, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            String name = param.method.getName();
+                            if (!name.equals("toString") && !name.equals("hashCode") && !name.equals("equals")) {
+                                XposedBridge.log(TAG + "[" + className.substring(className.lastIndexOf('.') + 1) + "] " + name + "() called");
+                            }
+                        }
+                    });
+                } catch (Throwable ignored) {}
+            }
+            XposedBridge.log(TAG + "Reward class hooks attempted");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "Reward class hooks FAILED: " + t.getMessage());
         }
     }
 
     /**
      * 记录广告展示时间
-     * 当广告Activity创建时设置标志
      */
     private static void hookAdShow(XC_LoadPackage.LoadPackageParam lpparam) {
-        // Hook ADActivity.onCreate - 广告Activity创建
         try {
             Class<?> adActivityClass = XposedHelpers.findClass(
                 "com.qq.e.tg.ADActivity",
@@ -204,8 +143,7 @@ public class MiMusicAdBlocker {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
                         adShown = true;
-                        fakeTimeOffset = 0;
-                        XposedBridge.log(TAG + "ADActivity.onCreate() - adShown=true, new cycle");
+                        XposedBridge.log(TAG + "ADActivity.onCreate() - adShown=true");
                     }
                 }
             );
@@ -218,10 +156,8 @@ public class MiMusicAdBlocker {
 
     /**
      * 辅助Hook - 记录广告事件
-     * 当奖励触发时重置标志
      */
     private static void hookAdEvents(XC_LoadPackage.LoadPackageParam lpparam) {
-        // Hook onADClose
         try {
             Class<?> listenerClass = XposedHelpers.findClass(
                 "com.tencent.qqmusiclite.freemode.ad.reward.listener.ActivityRewardListener",
@@ -231,37 +167,23 @@ public class MiMusicAdBlocker {
             XposedHelpers.findAndHookMethod(listenerClass, "onADClose", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
-                    XposedBridge.log(TAG + "onADClose() fired! adShown=" + adShown + ", offset=" + fakeTimeOffset);
+                    XposedBridge.log(TAG + "onADClose() fired!");
                 }
             });
-
-            XposedBridge.log(TAG + "onADClose hook OK");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "onADClose hook FAILED: " + t.getMessage());
-        }
-
-        // Hook requestReward - 奖励请求触发
-        try {
-            Class<?> listenerClass = XposedHelpers.findClass(
-                "com.tencent.qqmusiclite.freemode.ad.reward.listener.ActivityRewardListener",
-                lpparam.classLoader
-            );
 
             XposedHelpers.findAndHookMethod(listenerClass, "requestReward",
                 boolean.class, boolean.class, "kotlin.coroutines.Continuation",
                 new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) {
-                        XposedBridge.log(TAG + "requestReward() called! offset=" + fakeTimeOffset);
-                        // 不重置标志，保持offset直到新的ADActivity.onCreate
-                        // 广告可能有多轮(2-4次)，每次都需要offset
+                        XposedBridge.log(TAG + "requestReward() called!");
                     }
                 }
             );
 
-            XposedBridge.log(TAG + "requestReward hook OK");
+            XposedBridge.log(TAG + "Ad events hooks OK");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "requestReward hook FAILED: " + t.getMessage());
+            XposedBridge.log(TAG + "Ad events hooks FAILED: " + t.getMessage());
         }
     }
 }
