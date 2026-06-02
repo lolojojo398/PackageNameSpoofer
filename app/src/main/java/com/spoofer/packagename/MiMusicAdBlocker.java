@@ -1,7 +1,5 @@
 package com.spoofer.packagename;
 
-import java.lang.reflect.Method;
-
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
@@ -10,12 +8,14 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 /**
  * 小米音乐 - 看广告领金币 自动化
  *
- * 诊断版本: hook广告SDK内部类，打印所有方法调用
+ * 广告SDK的SystemWindowChecker(bl类)用native层读取时间
+ * c()=暂停时间, e()=恢复时间, b()=结果(3=时间不够)
+ * 方案: hook e()返回 c()+60秒，让SDK认为用户离开了足够久
  */
 public class MiMusicAdBlocker {
 
     private static final String TAG = "[MiMusicAd] ";
-    private static boolean adShown = false;
+    private static long lastPauseTime = 0;
 
     public static void hook(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.miui.player".equals(lpparam.packageName)) return;
@@ -28,79 +28,54 @@ public class MiMusicAdBlocker {
     }
 
     /**
-     * Hook 广告SDK的 SystemWindowChecker (com.qq.e.comm.plugin.m.bl)
-     * 打印所有方法调用，找到时间判定逻辑
+     * Hook SystemWindowChecker (bl类)
+     * onActivityPaused时记录c()的值
+     * hook e()返回暂停时间+60秒
+     * hook b()确保返回成功
      */
     private static void hookSystemWindowChecker(XC_LoadPackage.LoadPackageParam lpparam) {
-        // Hook SystemWindowChecker 内部类
         try {
             Class<?> checkerClass = XposedHelpers.findClass(
                 "com.qq.e.comm.plugin.m.bl",
                 lpparam.classLoader
             );
 
-            // 打印该类所有方法
-            Method[] methods = checkerClass.getDeclaredMethods();
-            for (Method m : methods) {
-                XposedBridge.log(TAG + "[bl] method: " + m.getName() + " params=" + m.getParameterCount());
-            }
-
-            // Hook 所有方法
-            for (Method m : methods) {
-                final String methodName = m.getName();
-                try {
-                    XposedBridge.hookMethod(m, new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            StringBuilder args = new StringBuilder();
-                            for (int i = 0; i < param.args.length; i++) {
-                                if (i > 0) args.append(", ");
-                                args.append(param.args[i] != null ? param.args[i].toString() : "null");
-                            }
-                            XposedBridge.log(TAG + "[bl]." + methodName + "(" + args + ")");
-                        }
-
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            Object result = param.getResult();
-                            if (result != null && !(result instanceof String)) {
-                                XposedBridge.log(TAG + "[bl]." + methodName + " -> " + result);
-                            }
-                        }
-                    });
-                } catch (Throwable t) {
-                    XposedBridge.log(TAG + "[bl]." + methodName + " hook FAILED: " + t.getMessage());
+            // Hook c() - 记录暂停时间
+            XposedHelpers.findAndHookMethod(checkerClass, "c", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    lastPauseTime = (long) param.getResult();
+                    XposedBridge.log(TAG + "[bl].c() = " + lastPauseTime);
                 }
-            }
+            });
 
-            XposedBridge.log(TAG + "SystemWindowChecker hook OK, " + methods.length + " methods hooked");
+            // Hook e() - 返回暂停时间+60秒（而不是真实恢复时间）
+            XposedHelpers.findAndHookMethod(checkerClass, "e", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (lastPauseTime > 0) {
+                        long fakeResumeTime = lastPauseTime + 60 * 1000L;
+                        param.setResult(fakeResumeTime);
+                        XposedBridge.log(TAG + "[bl].e() forced to " + fakeResumeTime + " (was " + param.getResult() + ")");
+                    }
+                }
+            });
+
+            // Hook b() - 强制返回0（成功）而不是3（时间不够）
+            XposedHelpers.findAndHookMethod(checkerClass, "b", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    int result = (int) param.getResult();
+                    if (result != 0) {
+                        param.setResult(0);
+                        XposedBridge.log(TAG + "[bl].b() forced 0 (was " + result + ")");
+                    }
+                }
+            });
+
+            XposedBridge.log(TAG + "SystemWindowChecker hook OK");
         } catch (Throwable t) {
             XposedBridge.log(TAG + "SystemWindowChecker hook FAILED: " + t.getMessage());
-        }
-
-        // Hook DirectLauncherNode (com.qq.e.comm.plugin.n.aq)
-        try {
-            Class<?> directClass = XposedHelpers.findClass(
-                "com.qq.e.comm.plugin.n.aq",
-                lpparam.classLoader
-            );
-
-            Method[] methods = directClass.getDeclaredMethods();
-            for (Method m : methods) {
-                final String methodName = m.getName();
-                try {
-                    XposedBridge.hookMethod(m, new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            XposedBridge.log(TAG + "[Direct]." + methodName + "() called");
-                        }
-                    });
-                } catch (Throwable ignored) {}
-            }
-
-            XposedBridge.log(TAG + "DirectLauncherNode hook OK, " + methods.length + " methods hooked");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "DirectLauncherNode hook FAILED: " + t.getMessage());
         }
     }
 
@@ -119,8 +94,8 @@ public class MiMusicAdBlocker {
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
-                        adShown = true;
-                        XposedBridge.log(TAG + "ADActivity.onCreate() - adShown=true");
+                        lastPauseTime = 0;
+                        XposedBridge.log(TAG + "ADActivity.onCreate() - reset");
                     }
                 }
             );
@@ -132,7 +107,7 @@ public class MiMusicAdBlocker {
     }
 
     /**
-     * 辅助Hook - 记录广告事件
+     * 辅助Hook
      */
     private static void hookAdEvents(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
