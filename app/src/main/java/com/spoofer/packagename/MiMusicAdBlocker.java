@@ -1,5 +1,7 @@
 package com.spoofer.packagename;
 
+import java.lang.reflect.Method;
+
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
@@ -8,9 +10,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 /**
  * 小米音乐 - 看广告领金币 自动化
  *
- * 广告SDK(SystemWindowChecker)用native层读取时间，绕过Java层hook
- * 方案: hook onActivityResumed，将时间戳改为足够大的值
- * 这样SDK计算的pause-resume差值就会 >= 5秒
+ * 诊断版本: hook广告SDK内部类，打印所有方法调用
  */
 public class MiMusicAdBlocker {
 
@@ -28,100 +28,79 @@ public class MiMusicAdBlocker {
     }
 
     /**
-     * Hook 广告SDK的 SystemWindowChecker
-     * 它的 onActivityResumed 里会计算 pause-resume 的时间差
-     * 我们把 resumed 的时间戳改成 paused + 60秒，让SDK认为用户离开了足够久
+     * Hook 广告SDK的 SystemWindowChecker (com.qq.e.comm.plugin.m.bl)
+     * 打印所有方法调用，找到时间判定逻辑
      */
     private static void hookSystemWindowChecker(XC_LoadPackage.LoadPackageParam lpparam) {
+        // Hook SystemWindowChecker 内部类
         try {
-            // 找到 SystemWindowChecker 的内部类
-            // 日志显示: com.qq.e.comm.plugin.m.bl
             Class<?> checkerClass = XposedHelpers.findClass(
                 "com.qq.e.comm.plugin.m.bl",
                 lpparam.classLoader
             );
 
-            // Hook 所有方法并打印日志，找到哪个方法返回结果
-            XposedBridge.hookAllMethods(checkerClass, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    XposedBridge.log(TAG + "[bl] " + param.method.getName() + "() called");
-                }
+            // 打印该类所有方法
+            Method[] methods = checkerClass.getDeclaredMethods();
+            for (Method m : methods) {
+                XposedBridge.log(TAG + "[bl] method: " + m.getName() + " params=" + m.getParameterCount());
+            }
 
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    if (param.method.getName().equals("toString") ||
-                        param.method.getName().equals("hashCode")) return;
-                    Object result = param.getResult();
-                    if (result != null) {
-                        XposedBridge.log(TAG + "[bl] " + param.method.getName() + "() returned: " + result);
-                    }
-                }
-            });
+            // Hook 所有方法
+            for (Method m : methods) {
+                final String methodName = m.getName();
+                try {
+                    XposedBridge.hookMethod(m, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            StringBuilder args = new StringBuilder();
+                            for (int i = 0; i < param.args.length; i++) {
+                                if (i > 0) args.append(", ");
+                                args.append(param.args[i] != null ? param.args[i].toString() : "null");
+                            }
+                            XposedBridge.log(TAG + "[bl]." + methodName + "(" + args + ")");
+                        }
 
-            XposedBridge.log(TAG + "SystemWindowChecker (bl) hook OK");
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            Object result = param.getResult();
+                            if (result != null && !(result instanceof String)) {
+                                XposedBridge.log(TAG + "[bl]." + methodName + " -> " + result);
+                            }
+                        }
+                    });
+                } catch (Throwable t) {
+                    XposedBridge.log(TAG + "[bl]." + methodName + " hook FAILED: " + t.getMessage());
+                }
+            }
+
+            XposedBridge.log(TAG + "SystemWindowChecker hook OK, " + methods.length + " methods hooked");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "SystemWindowChecker (bl) hook FAILED: " + t.getMessage());
+            XposedBridge.log(TAG + "SystemWindowChecker hook FAILED: " + t.getMessage());
         }
 
-        // 也尝试hook DirectLauncherNode 的回调
+        // Hook DirectLauncherNode (com.qq.e.comm.plugin.n.aq)
         try {
             Class<?> directClass = XposedHelpers.findClass(
                 "com.qq.e.comm.plugin.n.aq",
                 lpparam.classLoader
             );
 
-            XposedBridge.hookAllMethods(directClass, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    XposedBridge.log(TAG + "[DirectLauncher] " + param.method.getName() + "() called");
-                }
-            });
-
-            XposedBridge.log(TAG + "DirectLauncherNode hook OK");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "DirectLauncherNode hook FAILED: " + t.getMessage());
-        }
-
-        // Hook 所有包含 "reward" 或 "time" 相关的类
-        try {
-            String[] rewardClasses = {
-                "com.qq.e.comm.plugin.reward.a",
-                "com.qq.e.comm.plugin.reward.b",
-                "com.qq.e.comm.plugin.reward.c",
-                "com.qq.e.comm.plugin.reward.d",
-                "com.qq.e.comm.plugin.reward.e",
-                "com.qq.e.comm.plugin.m.a",
-                "com.qq.e.comm.plugin.m.b",
-                "com.qq.e.comm.plugin.m.c",
-                "com.qq.e.comm.plugin.m.d",
-                "com.qq.e.comm.plugin.m.e",
-                "com.qq.e.comm.plugin.m.f",
-                "com.qq.e.comm.plugin.m.g",
-                "com.qq.e.comm.plugin.m.h",
-                "com.qq.e.comm.plugin.m.i",
-                "com.qq.e.comm.plugin.m.j",
-                "com.qq.e.comm.plugin.m.k",
-                "com.qq.e.comm.plugin.m.l",
-                "com.qq.e.comm.plugin.m.m",
-            };
-            for (String className : rewardClasses) {
+            Method[] methods = directClass.getDeclaredMethods();
+            for (Method m : methods) {
+                final String methodName = m.getName();
                 try {
-                    Class<?> cls = XposedHelpers.findClass(className, lpparam.classLoader);
-                    XposedBridge.hookAllMethods(cls, new XC_MethodHook() {
+                    XposedBridge.hookMethod(m, new XC_MethodHook() {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) {
-                            String name = param.method.getName();
-                            if (!name.equals("toString") && !name.equals("hashCode") && !name.equals("equals")) {
-                                XposedBridge.log(TAG + "[" + className.substring(className.lastIndexOf('.') + 1) + "] " + name + "() called");
-                            }
+                            XposedBridge.log(TAG + "[Direct]." + methodName + "() called");
                         }
                     });
                 } catch (Throwable ignored) {}
             }
-            XposedBridge.log(TAG + "Reward class hooks attempted");
+
+            XposedBridge.log(TAG + "DirectLauncherNode hook OK, " + methods.length + " methods hooked");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "Reward class hooks FAILED: " + t.getMessage());
+            XposedBridge.log(TAG + "DirectLauncherNode hook FAILED: " + t.getMessage());
         }
     }
 
