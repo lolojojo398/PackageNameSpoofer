@@ -1,8 +1,5 @@
 package com.spoofer.packagename;
 
-import android.os.Handler;
-import android.os.Looper;
-
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
@@ -22,7 +19,6 @@ public class MiMusicAdBlocker {
     private static final String TAG = "[MiMusicAd] ";
     private static long fakeTimeOffset = 0;
     private static boolean adShown = false;
-    private static boolean rewardTriggered = false;
 
     public static void hook(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.miui.player".equals(lpparam.packageName)) return;
@@ -95,8 +91,8 @@ public class MiMusicAdBlocker {
             XposedHelpers.findAndHookMethod(listenerClass, "onEnterForeground", new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
-                    XposedBridge.log(TAG + "onEnterForeground() called, adShown=" + adShown + ", rewardTriggered=" + rewardTriggered);
-                    if (adShown && !rewardTriggered) {
+                    XposedBridge.log(TAG + "onEnterForeground() called, adShown=" + adShown);
+                    if (adShown) {
                         // 设置时间偏移: +2分钟
                         fakeTimeOffset = 2 * 60 * 1000L;
                         XposedBridge.log(TAG + "Setting fakeTimeOffset=" + fakeTimeOffset);
@@ -114,8 +110,8 @@ public class MiMusicAdBlocker {
             XposedHelpers.findAndHookMethod(listenerClass, "onResume", new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
-                    XposedBridge.log(TAG + "onResume() called, adShown=" + adShown + ", rewardTriggered=" + rewardTriggered);
-                    if (adShown && !rewardTriggered) {
+                    XposedBridge.log(TAG + "onResume() called, adShown=" + adShown);
+                    if (adShown) {
                         fakeTimeOffset = 2 * 60 * 1000L;
                         XposedBridge.log(TAG + "Setting fakeTimeOffset in onResume");
                     }
@@ -151,9 +147,8 @@ public class MiMusicAdBlocker {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
                         adShown = true;
-                        rewardTriggered = false;
                         fakeTimeOffset = 0;
-                        XposedBridge.log(TAG + "ADActivity.onCreate() - adShown=true, rewardTriggered=false");
+                        XposedBridge.log(TAG + "ADActivity.onCreate() - adShown=true, new cycle");
                     }
                 }
             );
@@ -200,16 +195,9 @@ public class MiMusicAdBlocker {
                 new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) {
-                        XposedBridge.log(TAG + "requestReward() called! adShown=" + adShown + ", offset=" + fakeTimeOffset);
-                        // 奖励触发后，延迟重置
-                        rewardTriggered = true;
-                        // 延迟2秒后重置所有标志
-                        new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                            fakeTimeOffset = 0;
-                            adShown = false;
-                            rewardTriggered = false;
-                            XposedBridge.log(TAG + "All flags reset after reward");
-                        }, 2000);
+                        XposedBridge.log(TAG + "requestReward() called! offset=" + fakeTimeOffset);
+                        // 不重置标志，保持offset直到新的ADActivity.onCreate
+                        // 广告可能有多轮(2-4次)，每次都需要offset
                     }
                 }
             );
