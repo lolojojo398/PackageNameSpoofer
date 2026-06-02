@@ -1,8 +1,10 @@
 package com.spoofer.packagename;
 
-import android.app.Activity;
 import android.os.Handler;
 import android.os.Looper;
+
+import java.io.DataOutputStream;
+import java.lang.Process;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -12,27 +14,26 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 /**
  * 小米音乐 - 看广告领金币 自动化
  *
- * 广告倒计时在Hippy JS层，无法通过Java层时间hook跳过
- * 方案: ADActivity创建后1秒自动finish，强制跳过倒计时
- * 同时hook SystemWindowChecker确保打开app检测通过
+ * 广告倒计时在Hippy JS层运行，Java层时间hook无效
+ * 方案: 广告开始后用root权限直接修改系统时间+2分钟
+ * JS层Date.now()会读取修改后的系统时间，倒计时立即完成
  */
 public class MiMusicAdBlocker {
 
     private static final String TAG = "[MiMusicAd] ";
-    private static long lastPauseTime = 0;
+    private static boolean adActive = false;
+    private static long realStartTime = 0;
 
     public static void hook(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.miui.player".equals(lpparam.packageName)) return;
 
         XposedBridge.log(TAG + "Loading hooks...");
-
         hookAdActivity(lpparam);
         hookAdEvents(lpparam);
-        hookSystemWindowChecker(lpparam);
     }
 
     /**
-     * Hook ADActivity - 创建后自动finish
+     * Hook ADActivity - 广告开始时用root改系统时间
      */
     private static void hookAdActivity(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
@@ -46,19 +47,46 @@ public class MiMusicAdBlocker {
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
-                        Activity activity = (Activity) param.thisObject;
-                        lastPauseTime = 0;
-                        XposedBridge.log(TAG + "ADActivity.onCreate() - scheduling auto-finish in 1s");
+                        if (adActive) return; // 防止重复触发
+                        adActive = true;
+                        realStartTime = System.currentTimeMillis();
+                        XposedBridge.log(TAG + "ADActivity.onCreate() - changing system time via root");
 
-                        // 1秒后自动关闭广告Activity
-                        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                        // 用root权限修改系统时间: 当前时间+2分钟
+                        new Thread(() -> {
                             try {
-                                XposedBridge.log(TAG + "Auto-finishing ADActivity");
-                                activity.finish();
+                                long newTime = System.currentTimeMillis() + 2 * 60 * 1000L;
+                                // date命令格式: MMDDhhmm[[CC]YY][.ss]
+                                java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("MMddHHmmyyyy.ss", java.util.Locale.US);
+                                String dateStr = sdf.format(new java.util.Date(newTime));
+
+                                XposedBridge.log(TAG + "Setting system time to: " + dateStr);
+
+                                Process process = Runtime.getRuntime().exec("su");
+                                DataOutputStream os = new DataOutputStream(process.getOutputStream());
+                                os.writeBytes("date " + dateStr + "\n");
+                                os.writeBytes("exit\n");
+                                os.flush();
+                                int exitCode = process.waitFor();
+                                XposedBridge.log(TAG + "date command exit code: " + exitCode);
+
+                                // 3秒后恢复真实时间
+                                Thread.sleep(3000);
+                                String realDateStr = sdf.format(new java.util.Date(realStartTime + 3000));
+                                Process process2 = Runtime.getRuntime().exec("su");
+                                DataOutputStream os2 = new DataOutputStream(process2.getOutputStream());
+                                os2.writeBytes("date " + realDateStr + "\n");
+                                os2.writeBytes("exit\n");
+                                os2.flush();
+                                process2.waitFor();
+                                XposedBridge.log(TAG + "System time restored to: " + realDateStr);
+
+                                adActive = false;
                             } catch (Throwable t) {
-                                XposedBridge.log(TAG + "Auto-finish FAILED: " + t.getMessage());
+                                XposedBridge.log(TAG + "Time change FAILED: " + t.getMessage());
+                                adActive = false;
                             }
-                        }, 1000);
+                        }).start();
                     }
                 }
             );
@@ -66,55 +94,6 @@ public class MiMusicAdBlocker {
             XposedBridge.log(TAG + "ADActivity hook OK");
         } catch (Throwable t) {
             XposedBridge.log(TAG + "ADActivity hook FAILED: " + t.getMessage());
-        }
-    }
-
-    /**
-     * Hook SystemWindowChecker (bl类) - 确保打开app检测通过
-     */
-    private static void hookSystemWindowChecker(XC_LoadPackage.LoadPackageParam lpparam) {
-        try {
-            Class<?> checkerClass = XposedHelpers.findClass(
-                "com.qq.e.comm.plugin.m.bl",
-                lpparam.classLoader
-            );
-
-            // Hook c() - 记录暂停时间
-            XposedHelpers.findAndHookMethod(checkerClass, "c", new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    lastPauseTime = (long) param.getResult();
-                    XposedBridge.log(TAG + "[bl].c() = " + lastPauseTime);
-                }
-            });
-
-            // Hook e() - 返回暂停时间+60秒
-            XposedHelpers.findAndHookMethod(checkerClass, "e", new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    if (lastPauseTime > 0) {
-                        long fakeResumeTime = lastPauseTime + 60 * 1000L;
-                        param.setResult(fakeResumeTime);
-                        XposedBridge.log(TAG + "[bl].e() forced to " + fakeResumeTime);
-                    }
-                }
-            });
-
-            // Hook b() - 强制返回0（成功）
-            XposedHelpers.findAndHookMethod(checkerClass, "b", new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    int result = (int) param.getResult();
-                    if (result != 0) {
-                        param.setResult(0);
-                        XposedBridge.log(TAG + "[bl].b() forced 0 (was " + result + ")");
-                    }
-                }
-            });
-
-            XposedBridge.log(TAG + "SystemWindowChecker hook OK");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "SystemWindowChecker hook FAILED: " + t.getMessage());
         }
     }
 
@@ -132,6 +111,7 @@ public class MiMusicAdBlocker {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
                     XposedBridge.log(TAG + "onADClose() fired!");
+                    adActive = false;
                 }
             });
 
