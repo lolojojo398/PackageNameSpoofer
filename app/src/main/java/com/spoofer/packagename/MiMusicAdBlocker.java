@@ -9,90 +9,124 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  * 小米音乐 - 看广告领金币 自动化
  *
  * 原理:
- * 广告SDK通过CountDownTimer控制倒计时(通常5秒)
- * 倒计时结束后调用doAfterCountDown()发送奖励请求
- * Hook CountDownTimer.start() 立即执行回调，跳过等待
+ * 广告SDK(穿山甲/优量汇)用 System.currentTimeMillis() 判断广告是否播放了足够时长
+ * 当用户改手机时间+1分钟后返回，SDK检测到时间已过去1分钟，判定广告播放完成
  *
- * 流程:
- * 用户点击"看广告领金币"
- *   → 广告SDK加载并播放视频
- *   → 视频播放完成 → onVideoComplete()
- *   → 广告关闭 → onADClose()
- *   → CountDownTimer.start(5000, onFinish)  ← 我们在这里拦截
- *   → [被Hook] 立即执行onFinish回调
- *   → doAfterCountDown()
- *   → requestReward()
- *   → 服务器验证EcpmToken → 发放金币
+ * 我们Hook System.currentTimeMillis()，当调用来自广告SDK类时，返回一个未来时间(+2分钟)
+ * 这样广告SDK会立即认为广告已经播放完成，无需手动改时间
  */
 public class MiMusicAdBlocker {
 
     private static final String TAG = "[MiMusicAd] ";
+    private static final long TIME_OFFSET = 2 * 60 * 1000L; // +2分钟
 
     public static void hook(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.miui.player".equals(lpparam.packageName)) return;
 
         XposedBridge.log(TAG + "Loading hooks...");
 
-        // 核心Hook: 跳过CountDownTimer倒计时
-        hookCountDownTimer(lpparam);
+        // 核心Hook: 对广告SDK返回伪造的未来时间
+        hookSystemTimeForAdSDK(lpparam);
 
         // 辅助Hook: 记录广告事件日志
         hookAdEvents(lpparam);
     }
 
     /**
-     * 核心Hook - 跳过CountDownTimer
+     * 核心Hook - 对广告SDK返回伪造的未来时间
      *
-     * CountDownTimer.start(int totalTime, Function0 onFinish)
-     * - totalTime: 倒计时总时长(毫秒)，通常是5000
-     * - onFinish: 倒计时结束后的回调函数
-     *
-     * 我们拦截这个方法，立即调用onFinish，然后return
-     * 这样整个倒计时过程被跳过，奖励请求立即发出
+     * 广告SDK用 System.currentTimeMillis() 来判断广告是否播放了足够时长
+     * 我们检测调用栈，如果调用来自广告SDK类，就返回+2分钟后的时间
+     * 这样SDK会立即认为广告已经播放完成
      */
-    private static void hookCountDownTimer(XC_LoadPackage.LoadPackageParam lpparam) {
+    private static void hookSystemTimeForAdSDK(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
-            Class<?> timerClass = XposedHelpers.findClass(
-                "com.tencent.qqmusiclite.freemode.util.CountDownTimer",
-                lpparam.classLoader
-            );
-
-            XposedHelpers.findAndHookMethod(timerClass, "start",
-                int.class,
-                "kotlin.jvm.functions.Function0",
+            XposedHelpers.findAndHookMethod("java.lang.System", lpparam.classLoader,
+                "currentTimeMillis",
                 new XC_MethodHook() {
                     @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
-                        int totalTime = (int) param.args[0];
-                        Object callback = param.args[1];
-
-                        XposedBridge.log(TAG + "CountDownTimer.start() intercepted, totalTime=" + totalTime);
-
-                        if (callback != null) {
-                            try {
-                                // 立即执行完成回调
-                                XposedHelpers.callMethod(callback, "invoke");
-                                XposedBridge.log(TAG + "Reward callback executed immediately");
-                            } catch (Throwable t) {
-                                XposedBridge.log(TAG + "Callback invoke error: " + t.getMessage());
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        // 检查调用栈，判断是否来自广告SDK
+                        StackTraceElement[] stack = Thread.currentThread().getStackTrace();
+                        boolean fromAdSdk = false;
+                        for (StackTraceElement element : stack) {
+                            String className = element.getClassName();
+                            // 穿山甲SDK (字节跳动)
+                            if (className.startsWith("com.bytedance.") ||
+                                className.startsWith("com.ss.android.") ||
+                                className.startsWith("com.pangle.") ||
+                                // 优量汇SDK (腾讯)
+                                className.startsWith("com.qq.e.") ||
+                                className.startsWith("com.gdt.") ||
+                                // 腾讯广告SDK
+                                className.startsWith("com.tencentmusic.ad.") ||
+                                className.startsWith("com.tencent.qqmusiclite.ad.") ||
+                                className.startsWith("com.tencent.qqmusiclite.freemode.") ||
+                                // 其他广告相关
+                                className.contains("reward") ||
+                                className.contains("Reward") ||
+                                className.contains("advideo") ||
+                                className.contains("AdVideo")) {
+                                fromAdSdk = true;
+                                break;
                             }
                         }
 
-                        // 阻止原始的start()执行(不启动倒计时)
-                        param.setResult(null);
+                        if (fromAdSdk) {
+                            long original = (long) param.getResult();
+                            param.setResult(original + TIME_OFFSET);
+                        }
                     }
                 }
             );
 
-            XposedBridge.log(TAG + "CountDownTimer.start() hook OK");
+            XposedBridge.log(TAG + "System.currentTimeMillis() hook OK");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "CountDownTimer hook FAILED: " + t.getMessage());
+            XposedBridge.log(TAG + "System.currentTimeMillis() hook FAILED: " + t.getMessage());
+        }
+
+        // 也Hook SystemClock.elapsedRealtime()，有些SDK用这个
+        try {
+            XposedHelpers.findAndHookMethod("android.os.SystemClock", lpparam.classLoader,
+                "elapsedRealtime",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        StackTraceElement[] stack = Thread.currentThread().getStackTrace();
+                        boolean fromAdSdk = false;
+                        for (StackTraceElement element : stack) {
+                            String className = element.getClassName();
+                            if (className.startsWith("com.bytedance.") ||
+                                className.startsWith("com.ss.android.") ||
+                                className.startsWith("com.pangle.") ||
+                                className.startsWith("com.qq.e.") ||
+                                className.startsWith("com.gdt.") ||
+                                className.startsWith("com.tencentmusic.ad.") ||
+                                className.startsWith("com.tencent.qqmusiclite.ad.") ||
+                                className.startsWith("com.tencent.qqmusiclite.freemode.") ||
+                                className.contains("reward") ||
+                                className.contains("Reward")) {
+                                fromAdSdk = true;
+                                break;
+                            }
+                        }
+
+                        if (fromAdSdk) {
+                            long original = (long) param.getResult();
+                            param.setResult(original + TIME_OFFSET);
+                        }
+                    }
+                }
+            );
+
+            XposedBridge.log(TAG + "SystemClock.elapsedRealtime() hook OK");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "SystemClock.elapsedRealtime() hook FAILED: " + t.getMessage());
         }
     }
 
     /**
      * 辅助Hook - 记录广告事件日志
-     * 用于调试，确认Hook是否正常工作
      */
     private static void hookAdEvents(XC_LoadPackage.LoadPackageParam lpparam) {
         // Hook onADClose - 广告关闭
