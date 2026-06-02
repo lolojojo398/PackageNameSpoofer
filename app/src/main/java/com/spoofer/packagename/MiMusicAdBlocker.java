@@ -1,5 +1,9 @@
 package com.spoofer.packagename;
 
+import android.app.Activity;
+import android.os.Handler;
+import android.os.Looper;
+
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
@@ -8,9 +12,9 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 /**
  * 小米音乐 - 看广告领金币 自动化
  *
- * 广告SDK的SystemWindowChecker(bl类)用native层读取时间
- * c()=暂停时间, e()=恢复时间, b()=结果(3=时间不够)
- * 方案: hook e()返回 c()+60秒，让SDK认为用户离开了足够久
+ * 广告倒计时在Hippy JS层，无法通过Java层时间hook跳过
+ * 方案: ADActivity创建后1秒自动finish，强制跳过倒计时
+ * 同时hook SystemWindowChecker确保打开app检测通过
  */
 public class MiMusicAdBlocker {
 
@@ -22,16 +26,51 @@ public class MiMusicAdBlocker {
 
         XposedBridge.log(TAG + "Loading hooks...");
 
-        hookAdShow(lpparam);
+        hookAdActivity(lpparam);
         hookAdEvents(lpparam);
         hookSystemWindowChecker(lpparam);
     }
 
     /**
-     * Hook SystemWindowChecker (bl类)
-     * onActivityPaused时记录c()的值
-     * hook e()返回暂停时间+60秒
-     * hook b()确保返回成功
+     * Hook ADActivity - 创建后自动finish
+     */
+    private static void hookAdActivity(XC_LoadPackage.LoadPackageParam lpparam) {
+        try {
+            Class<?> adActivityClass = XposedHelpers.findClass(
+                "com.qq.e.tg.ADActivity",
+                lpparam.classLoader
+            );
+
+            XposedHelpers.findAndHookMethod(adActivityClass, "onCreate",
+                android.os.Bundle.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        Activity activity = (Activity) param.thisObject;
+                        lastPauseTime = 0;
+                        XposedBridge.log(TAG + "ADActivity.onCreate() - scheduling auto-finish in 1s");
+
+                        // 1秒后自动关闭广告Activity
+                        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                            try {
+                                XposedBridge.log(TAG + "Auto-finishing ADActivity");
+                                activity.finish();
+                            } catch (Throwable t) {
+                                XposedBridge.log(TAG + "Auto-finish FAILED: " + t.getMessage());
+                            }
+                        }, 1000);
+                    }
+                }
+            );
+
+            XposedBridge.log(TAG + "ADActivity hook OK");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "ADActivity hook FAILED: " + t.getMessage());
+        }
+    }
+
+    /**
+     * Hook SystemWindowChecker (bl类) - 确保打开app检测通过
      */
     private static void hookSystemWindowChecker(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
@@ -49,19 +88,19 @@ public class MiMusicAdBlocker {
                 }
             });
 
-            // Hook e() - 返回暂停时间+60秒（而不是真实恢复时间）
+            // Hook e() - 返回暂停时间+60秒
             XposedHelpers.findAndHookMethod(checkerClass, "e", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
                     if (lastPauseTime > 0) {
                         long fakeResumeTime = lastPauseTime + 60 * 1000L;
                         param.setResult(fakeResumeTime);
-                        XposedBridge.log(TAG + "[bl].e() forced to " + fakeResumeTime + " (was " + param.getResult() + ")");
+                        XposedBridge.log(TAG + "[bl].e() forced to " + fakeResumeTime);
                     }
                 }
             });
 
-            // Hook b() - 强制返回0（成功）而不是3（时间不够）
+            // Hook b() - 强制返回0（成功）
             XposedHelpers.findAndHookMethod(checkerClass, "b", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
@@ -76,33 +115,6 @@ public class MiMusicAdBlocker {
             XposedBridge.log(TAG + "SystemWindowChecker hook OK");
         } catch (Throwable t) {
             XposedBridge.log(TAG + "SystemWindowChecker hook FAILED: " + t.getMessage());
-        }
-    }
-
-    /**
-     * 记录广告展示时间
-     */
-    private static void hookAdShow(XC_LoadPackage.LoadPackageParam lpparam) {
-        try {
-            Class<?> adActivityClass = XposedHelpers.findClass(
-                "com.qq.e.tg.ADActivity",
-                lpparam.classLoader
-            );
-
-            XposedHelpers.findAndHookMethod(adActivityClass, "onCreate",
-                android.os.Bundle.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        lastPauseTime = 0;
-                        XposedBridge.log(TAG + "ADActivity.onCreate() - reset");
-                    }
-                }
-            );
-
-            XposedBridge.log(TAG + "ADActivity.onCreate hook OK");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "ADActivity.onCreate hook FAILED: " + t.getMessage());
         }
     }
 
