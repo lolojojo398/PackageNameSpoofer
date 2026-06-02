@@ -18,7 +18,7 @@ android {
         release {
             storeFile file("../release.keystore")
             storePassword "123456"
-            keyAlias "xiaomiadskip"
+            keyAlias "taskbypass"
             keyPassword "123456"
         }
     }
