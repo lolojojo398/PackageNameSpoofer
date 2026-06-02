@@ -8,194 +8,93 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 /**
  * 小米音乐 - 看广告领金币 自动化
  *
- * 原理:
- * 广告SDK用 System.currentTimeMillis() 判断广告是否播放了足够时长
- * 我们Hook这个方法，对广告SDK类返回+2分钟的未来时间
+ * 方案: Hook广告SDK的事件回调，直接触发奖励
  */
 public class MiMusicAdBlocker {
 
     private static final String TAG = "[MiMusicAd] ";
-    private static final long TIME_OFFSET = 2 * 60 * 1000L; // +2分钟
-    private static int callCount = 0;
 
     public static void hook(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.miui.player".equals(lpparam.packageName)) return;
 
         XposedBridge.log(TAG + "Loading hooks...");
 
-        // 核心Hook: 对广告SDK返回伪造的未来时间
-        hookSystemTimeForAdSDK(lpparam);
+        // 方案1: Hook广告SDK的事件回调
+        hookAdEventCallback(lpparam);
 
-        // 辅助Hook: 记录广告事件日志
-        hookAdEvents(lpparam);
+        // 方案2: Hook小米音乐的奖励监听器
+        hookRewardListener(lpparam);
+
+        // 方案3: Hook广告Activity的生命周期
+        hookAdActivity(lpparam);
     }
 
     /**
-     * 核心Hook - 对广告SDK返回伪造的未来时间
+     * Hook广告SDK的事件回调
+     * TangramRewardAD$ADListenerAdapter.onADEvent(ADEvent)
+     *
+     * 当广告SDK触发奖励事件时，我们拦截并立即处理
      */
-    private static void hookSystemTimeForAdSDK(XC_LoadPackage.LoadPackageParam lpparam) {
+    private static void hookAdEventCallback(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
-            XposedHelpers.findAndHookMethod("java.lang.System", lpparam.classLoader,
-                "currentTimeMillis",
+            Class<?> adapterClass = XposedHelpers.findClass(
+                "com.qq.e.tg.rewardAD.TangramRewardAD$ADListenerAdapter",
+                lpparam.classLoader
+            );
+
+            XposedHelpers.findAndHookMethod(adapterClass, "onADEvent",
+                "com.qq.e.comm.adevent.ADEvent",
                 new XC_MethodHook() {
                     @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        // 检查调用栈，判断是否来自广告SDK
-                        StackTraceElement[] stack = Thread.currentThread().getStackTrace();
-                        boolean fromAdSdk = false;
-                        String matchedClass = "";
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        try {
+                            Object adEvent = param.args[0];
+                            // 获取事件类型
+                            int eventType = XposedHelpers.getIntField(adEvent, "a");
+                            XposedBridge.log(TAG + "ADEvent type=" + eventType);
 
-                        for (StackTraceElement element : stack) {
-                            String className = element.getClassName();
-                            // 穿山甲SDK (字节跳动)
-                            if (className.startsWith("com.bytedance.") ||
-                                className.startsWith("com.ss.android.") ||
-                                className.startsWith("com.pangle.") ||
-                                // 优量汇SDK (腾讯)
-                                className.startsWith("com.qq.e.") ||
-                                className.startsWith("com.gdt.") ||
-                                // 腾讯广告SDK
-                                className.startsWith("com.tencentmusic.ad.") ||
-                                className.startsWith("com.tencent.qqmusiclite.ad.") ||
-                                className.startsWith("com.tencent.qqmusiclite.freemode.") ||
-                                // 广告Activity
-                                className.contains("ADActivity") ||
-                                className.contains("RewardActivity") ||
-                                // 其他广告相关
-                                className.contains("reward") ||
-                                className.contains("Reward") ||
-                                className.contains("advideo") ||
-                                className.contains("AdVideo") ||
-                                className.contains("countdown") ||
-                                className.contains("CountDown")) {
-                                fromAdSdk = true;
-                                matchedClass = className;
-                                break;
-                            }
-                        }
+                            // 事件类型:
+                            // 1 = onADLoad
+                            // 2 = onADShow
+                            // 3 = onADExpose
+                            // 4 = onADClick
+                            // 5 = onADClose
+                            // 6 = onADComplete
+                            // 7 = onReward
+                            // 8 = onError
+                            // 9 = onADPlay
+                            // 10 = onADCached
 
-                        if (fromAdSdk) {
-                            long original = (long) param.getResult();
-                            param.setResult(original + TIME_OFFSET);
-                            callCount++;
-                            // 只打印前10次，避免日志太多
-                            if (callCount <= 10) {
-                                XposedBridge.log(TAG + "Time hooked from " + matchedClass + ", offset=" + TIME_OFFSET);
+                            if (eventType == 7) { // onReward
+                                XposedBridge.log(TAG + "REWARD EVENT detected!");
                             }
+                        } catch (Throwable t) {
+                            XposedBridge.log(TAG + "ADEvent error: " + t.getMessage());
                         }
                     }
                 }
             );
 
-            XposedBridge.log(TAG + "System.currentTimeMillis() hook OK");
+            XposedBridge.log(TAG + "ADEvent hook OK");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "System.currentTimeMillis() hook FAILED: " + t.getMessage());
-        }
-
-        // 也Hook SystemClock.elapsedRealtime()，有些SDK用这个
-        try {
-            XposedHelpers.findAndHookMethod("android.os.SystemClock", lpparam.classLoader,
-                "elapsedRealtime",
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        StackTraceElement[] stack = Thread.currentThread().getStackTrace();
-                        boolean fromAdSdk = false;
-                        String matchedClass = "";
-
-                        for (StackTraceElement element : stack) {
-                            String className = element.getClassName();
-                            if (className.startsWith("com.bytedance.") ||
-                                className.startsWith("com.ss.android.") ||
-                                className.startsWith("com.pangle.") ||
-                                className.startsWith("com.qq.e.") ||
-                                className.startsWith("com.gdt.") ||
-                                className.startsWith("com.tencentmusic.ad.") ||
-                                className.startsWith("com.tencent.qqmusiclite.ad.") ||
-                                className.startsWith("com.tencent.qqmusiclite.freemode.") ||
-                                className.contains("ADActivity") ||
-                                className.contains("RewardActivity") ||
-                                className.contains("reward") ||
-                                className.contains("Reward") ||
-                                className.contains("countdown") ||
-                                className.contains("CountDown")) {
-                                fromAdSdk = true;
-                                matchedClass = className;
-                                break;
-                            }
-                        }
-
-                        if (fromAdSdk) {
-                            long original = (long) param.getResult();
-                            param.setResult(original + TIME_OFFSET);
-                            if (callCount <= 10) {
-                                XposedBridge.log(TAG + "elapsedRealtime hooked from " + matchedClass);
-                            }
-                        }
-                    }
-                }
-            );
-
-            XposedBridge.log(TAG + "SystemClock.elapsedRealtime() hook OK");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "SystemClock.elapsedRealtime() hook FAILED: " + t.getMessage());
-        }
-
-        // Hook android.os.SystemClock.uptimeMillis() - 有些SDK用这个
-        try {
-            XposedHelpers.findAndHookMethod("android.os.SystemClock", lpparam.classLoader,
-                "uptimeMillis",
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        StackTraceElement[] stack = Thread.currentThread().getStackTrace();
-                        boolean fromAdSdk = false;
-
-                        for (StackTraceElement element : stack) {
-                            String className = element.getClassName();
-                            if (className.startsWith("com.bytedance.") ||
-                                className.startsWith("com.ss.android.") ||
-                                className.startsWith("com.pangle.") ||
-                                className.startsWith("com.qq.e.") ||
-                                className.startsWith("com.gdt.") ||
-                                className.startsWith("com.tencentmusic.ad.") ||
-                                className.startsWith("com.tencent.qqmusiclite.ad.") ||
-                                className.startsWith("com.tencent.qqmusiclite.freemode.") ||
-                                className.contains("ADActivity") ||
-                                className.contains("reward") ||
-                                className.contains("Reward") ||
-                                className.contains("countdown") ||
-                                className.contains("CountDown")) {
-                                fromAdSdk = true;
-                                break;
-                            }
-                        }
-
-                        if (fromAdSdk) {
-                            long original = (long) param.getResult();
-                            param.setResult(original + TIME_OFFSET);
-                        }
-                    }
-                }
-            );
-
-            XposedBridge.log(TAG + "SystemClock.uptimeMillis() hook OK");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "SystemClock.uptimeMillis() hook FAILED: " + t.getMessage());
+            XposedBridge.log(TAG + "ADEvent hook FAILED: " + t.getMessage());
         }
     }
 
     /**
-     * 辅助Hook - 记录广告事件日志
+     * Hook小米音乐的奖励监听器
+     * ActivityRewardListener.onADClose()
+     *
+     * 当广告关闭时触发奖励流程
      */
-    private static void hookAdEvents(XC_LoadPackage.LoadPackageParam lpparam) {
-        // Hook onADClose - 广告关闭
+    private static void hookRewardListener(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
             Class<?> listenerClass = XposedHelpers.findClass(
                 "com.tencent.qqmusiclite.freemode.ad.reward.listener.ActivityRewardListener",
                 lpparam.classLoader
             );
 
+            // Hook onADClose
             XposedHelpers.findAndHookMethod(listenerClass, "onADClose", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
@@ -203,50 +102,55 @@ public class MiMusicAdBlocker {
                 }
             });
 
-            XposedBridge.log(TAG + "onADClose hook OK");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "onADClose hook FAILED: " + t.getMessage());
-        }
-
-        // Hook onVideoComplete - 视频播放完成
-        try {
-            Class<?> callbackClass = XposedHelpers.findClass(
-                "com.tencentmusic.ad.adapter.mad.reward.MADRewardVideoAdAdapter$c",
-                lpparam.classLoader
-            );
-
-            XposedHelpers.findAndHookMethod(callbackClass, "onVideoComplete", new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    XposedBridge.log(TAG + "onVideoComplete() fired!");
-                }
-            });
-
-            XposedBridge.log(TAG + "onVideoComplete hook OK");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "onVideoComplete hook FAILED: " + t.getMessage());
-        }
-
-        // Hook 广告SDK的 rewardVerify 方法
-        try {
-            Class<?> rewardClass = XposedHelpers.findClass(
-                "com.bykv.vk.openvk.mediation.bridge.custom.reward.MediationCustomRewardVideoLoader",
-                lpparam.classLoader
-            );
-
-            XposedHelpers.findAndHookMethod(rewardClass, "callRewardVideoRewardVerify",
-                "com.bykv.vk.openvk.mediation.custom.MediationRewardItem",
+            // Hook requestReward
+            XposedHelpers.findAndHookMethod(listenerClass, "requestReward",
+                boolean.class, boolean.class, "kotlin.coroutines.Continuation",
                 new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) {
-                        XposedBridge.log(TAG + "callRewardVideoRewardVerify() fired!");
+                        XposedBridge.log(TAG + "requestReward() called, args=" + param.args[0] + "," + param.args[1]);
                     }
                 }
             );
 
-            XposedBridge.log(TAG + "callRewardVideoRewardVerify hook OK");
+            XposedBridge.log(TAG + "RewardListener hook OK");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "callRewardVideoRewardVerify hook FAILED: " + t.getMessage());
+            XposedBridge.log(TAG + "RewardListener hook FAILED: " + t.getMessage());
+        }
+    }
+
+    /**
+     * Hook广告Activity
+     * com.qq.e.tg.ADActivity
+     *
+     * 监控广告Activity的生命周期
+     */
+    private static void hookAdActivity(XC_LoadPackage.LoadPackageParam lpparam) {
+        try {
+            Class<?> activityClass = XposedHelpers.findClass(
+                "com.qq.e.tg.ADActivity",
+                lpparam.classLoader
+            );
+
+            // Hook onDestroy
+            XposedHelpers.findAndHookMethod(activityClass, "onDestroy", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    XposedBridge.log(TAG + "ADActivity.onDestroy()");
+                }
+            });
+
+            // Hook onPause
+            XposedHelpers.findAndHookMethod(activityClass, "onPause", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    XposedBridge.log(TAG + "ADActivity.onPause()");
+                }
+            });
+
+            XposedBridge.log(TAG + "ADActivity hook OK");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "ADActivity hook FAILED: " + t.getMessage());
         }
     }
 }
