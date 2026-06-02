@@ -1,5 +1,8 @@
 package com.spoofer.packagename;
 
+import android.os.Handler;
+import android.os.Looper;
+
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
@@ -10,38 +13,39 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  *
  * 原理:
  * 广告SDK在用户返回小米音乐时检查时间差
- * 如果距离广告展示已经过去足够时间(通常5-15秒)，则触发奖励
- *
- * 我们Hook onEnterForeground()，在返回时伪造一个未来时间
- * 让广告SDK认为已经过去了足够的时间
+ * 我们在onEnterForeground时设置时间偏移+2分钟
+ * 保持5秒后自动重置，确保时间检查期间offset有效
  */
 public class MiMusicAdBlocker {
 
     private static final String TAG = "[MiMusicAd] ";
     private static long fakeTimeOffset = 0;
     private static boolean adShown = false;
+    private static Handler resetHandler;
 
     public static void hook(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.miui.player".equals(lpparam.packageName)) return;
 
         XposedBridge.log(TAG + "Loading hooks...");
 
-        // 核心Hook: 在返回时伪造时间
+        // 初始化Handler用于延迟重置
+        try {
+            resetHandler = new Handler(Looper.getMainLooper());
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "Handler init failed: " + t.getMessage());
+        }
+
+        // 核心Hook
         hookOnEnterForeground(lpparam);
-
-        // 辅助Hook: 记录广告展示时间
         hookAdShow(lpparam);
-
-        // 辅助Hook: 记录事件
         hookAdEvents(lpparam);
     }
 
     /**
      * 核心Hook - onEnterForeground
      *
-     * 当用户从外部返回小米音乐时调用
-     * 广告SDK会在这里检查时间差
-     * 我们在检查之前设置一个时间偏移，让时间差看起来足够大
+     * 当用户返回小米音乐时，设置时间偏移+2分钟
+     * 保持5秒后自动重置，确保时间检查期间offset有效
      */
     private static void hookOnEnterForeground(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
@@ -59,15 +63,16 @@ public class MiMusicAdBlocker {
                         // 设置时间偏移: +2分钟
                         fakeTimeOffset = 2 * 60 * 1000L;
                         XposedBridge.log(TAG + "Setting fakeTimeOffset=" + fakeTimeOffset);
-                    }
-                }
 
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    // 重置偏移
-                    fakeTimeOffset = 0;
-                    adShown = false;
-                    XposedBridge.log(TAG + "onEnterForeground() done, reset offset");
+                        // 5秒后自动重置
+                        if (resetHandler != null) {
+                            resetHandler.postDelayed(() -> {
+                                fakeTimeOffset = 0;
+                                adShown = false;
+                                XposedBridge.log(TAG + "Offset reset after delay");
+                            }, 5000);
+                        }
+                    }
                 }
             });
 
@@ -75,16 +80,20 @@ public class MiMusicAdBlocker {
             XposedHelpers.findAndHookMethod(listenerClass, "onResume", new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
-                    XposedBridge.log(TAG + "onResume() called");
+                    XposedBridge.log(TAG + "onResume() called, adShown=" + adShown);
                     if (adShown) {
                         fakeTimeOffset = 2 * 60 * 1000L;
-                    }
-                }
+                        XposedBridge.log(TAG + "Setting fakeTimeOffset in onResume");
 
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    fakeTimeOffset = 0;
-                    adShown = false;
+                        // 5秒后自动重置
+                        if (resetHandler != null) {
+                            resetHandler.postDelayed(() -> {
+                                fakeTimeOffset = 0;
+                                adShown = false;
+                                XposedBridge.log(TAG + "Offset reset after delay (from onResume)");
+                            }, 5000);
+                        }
+                    }
                 }
             });
 
@@ -103,6 +112,7 @@ public class MiMusicAdBlocker {
                         if (fakeTimeOffset > 0) {
                             long original = (long) param.getResult();
                             param.setResult(original + fakeTimeOffset);
+                            XposedBridge.log(TAG + "Time modified: " + original + " -> " + (original + fakeTimeOffset));
                         }
                     }
                 }
@@ -112,37 +122,32 @@ public class MiMusicAdBlocker {
         } catch (Throwable t) {
             XposedBridge.log(TAG + "System.currentTimeMillis() hook FAILED: " + t.getMessage());
         }
-    }
 
-    /**
-     * 记录广告展示时间
-     * 当广告展示时设置标志
-     */
-    private static void hookAdShow(XC_LoadPackage.LoadPackageParam lpparam) {
+        // Hook SystemClock.elapsedRealtime() - 有些SDK用这个
         try {
-            Class<?> listenerClass = XposedHelpers.findClass(
-                "com.tencent.qqmusiclite.freemode.ad.reward.listener.ActivityRewardListener",
-                lpparam.classLoader
-            );
-
-            // Hook loadVideoAd - 广告加载
-            XposedHelpers.findAndHookMethod(listenerClass, "loadVideoAd",
-                "com.tencent.qqmusiclite.freemode.data.enums.AdConfigID",
-                "com.tencent.qqmusiclite.freemode.data.enums.RewardAdType",
-                String.class,
+            XposedHelpers.findAndHookMethod("android.os.SystemClock", lpparam.classLoader,
+                "elapsedRealtime",
                 new XC_MethodHook() {
                     @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
-                        XposedBridge.log(TAG + "loadVideoAd() called - ad loading");
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (fakeTimeOffset > 0) {
+                            long original = (long) param.getResult();
+                            param.setResult(original + fakeTimeOffset);
+                        }
                     }
                 }
             );
 
-            XposedBridge.log(TAG + "loadVideoAd hook OK");
+            XposedBridge.log(TAG + "SystemClock.elapsedRealtime() hook OK");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + "loadVideoAd hook FAILED: " + t.getMessage());
+            XposedBridge.log(TAG + "SystemClock.elapsedRealtime() hook FAILED: " + t.getMessage());
         }
+    }
 
+    /**
+     * 记录广告展示时间
+     */
+    private static void hookAdShow(XC_LoadPackage.LoadPackageParam lpparam) {
         // Hook ADActivity.onCreate - 广告Activity创建
         try {
             Class<?> adActivityClass = XposedHelpers.findClass(
@@ -202,7 +207,7 @@ public class MiMusicAdBlocker {
                 new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) {
-                        XposedBridge.log(TAG + "requestReward() called!");
+                        XposedBridge.log(TAG + "requestReward() called! fakeTimeOffset=" + fakeTimeOffset);
                     }
                 }
             );
