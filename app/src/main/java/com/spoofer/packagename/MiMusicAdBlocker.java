@@ -33,9 +33,10 @@ public class MiMusicAdBlocker {
     }
 
     /**
-     * Hook System.currentTimeMillis() - 只在有偏移时修改
+     * Hook 所有时间API - 广告SDK可能用任何一个
      */
     private static void hookSystemTime(XC_LoadPackage.LoadPackageParam lpparam) {
+        // System.currentTimeMillis()
         try {
             XposedHelpers.findAndHookMethod("java.lang.System", lpparam.classLoader,
                 "currentTimeMillis",
@@ -45,17 +46,17 @@ public class MiMusicAdBlocker {
                         if (fakeTimeOffset > 0) {
                             long original = (long) param.getResult();
                             param.setResult(original + fakeTimeOffset);
+                            XposedBridge.log(TAG + "Time modified: " + original + " -> " + (original + fakeTimeOffset));
                         }
                     }
                 }
             );
-
             XposedBridge.log(TAG + "System.currentTimeMillis() hook OK");
         } catch (Throwable t) {
             XposedBridge.log(TAG + "System.currentTimeMillis() hook FAILED: " + t.getMessage());
         }
 
-        // Hook SystemClock.elapsedRealtime()
+        // SystemClock.elapsedRealtime()
         try {
             XposedHelpers.findAndHookMethod("android.os.SystemClock", lpparam.classLoader,
                 "elapsedRealtime",
@@ -69,10 +70,66 @@ public class MiMusicAdBlocker {
                     }
                 }
             );
-
             XposedBridge.log(TAG + "SystemClock.elapsedRealtime() hook OK");
         } catch (Throwable t) {
             XposedBridge.log(TAG + "SystemClock.elapsedRealtime() hook FAILED: " + t.getMessage());
+        }
+
+        // SystemClock.uptimeMillis()
+        try {
+            XposedHelpers.findAndHookMethod("android.os.SystemClock", lpparam.classLoader,
+                "uptimeMillis",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (fakeTimeOffset > 0) {
+                            long original = (long) param.getResult();
+                            param.setResult(original + fakeTimeOffset);
+                        }
+                    }
+                }
+            );
+            XposedBridge.log(TAG + "SystemClock.uptimeMillis() hook OK");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "SystemClock.uptimeMillis() hook FAILED: " + t.getMessage());
+        }
+
+        // SystemClock.elapsedRealtimeNanos()
+        try {
+            XposedHelpers.findAndHookMethod("android.os.SystemClock", lpparam.classLoader,
+                "elapsedRealtimeNanos",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (fakeTimeOffset > 0) {
+                            long original = (long) param.getResult();
+                            param.setResult(original + fakeTimeOffset * 1000000L);
+                        }
+                    }
+                }
+            );
+            XposedBridge.log(TAG + "SystemClock.elapsedRealtimeNanos() hook OK");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "SystemClock.elapsedRealtimeNanos() hook FAILED: " + t.getMessage());
+        }
+
+        // System.nanoTime()
+        try {
+            XposedHelpers.findAndHookMethod("java.lang.System", lpparam.classLoader,
+                "nanoTime",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (fakeTimeOffset > 0) {
+                            long original = (long) param.getResult();
+                            param.setResult(original + fakeTimeOffset * 1000000L);
+                        }
+                    }
+                }
+            );
+            XposedBridge.log(TAG + "System.nanoTime() hook OK");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "System.nanoTime() hook FAILED: " + t.getMessage());
         }
     }
 
