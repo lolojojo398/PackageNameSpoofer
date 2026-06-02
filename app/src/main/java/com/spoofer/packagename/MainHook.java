@@ -46,6 +46,7 @@ public class MainHook implements IXposedHookLoadPackage {
         hookDeviceId(lpparam.classLoader, hostApp);
         ExchangeHook.hook(lpparam);
         TaskBypassHook.hook(lpparam);
+        MiMusicAdBlocker.hook(lpparam);
     }
 
     private void hookPackageManager(ClassLoader cl, final String hostApp) {

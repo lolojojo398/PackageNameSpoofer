@@ -7,7 +7,7 @@ android {
     namespace "com.spoofer.packagename"
 
     defaultConfig {
-        applicationId "com.bypass.taskbypass"
+        applicationId "com.xiaomi.music.adskip"
         minSdk 28
         targetSdk 35
         versionCode 1
@@ -18,7 +18,7 @@ android {
         release {
             storeFile file("../release.keystore")
             storePassword "123456"
-            keyAlias "taskbypass"
+            keyAlias "xiaomiadskip"
             keyPassword "123456"
         }
     }

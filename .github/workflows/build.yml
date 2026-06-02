@@ -31,6 +31,6 @@ jobs:
       if: success()
       uses: actions/upload-artifact@v4
       with:
-        name: PackageNameSpoofer-debug
+        name: XiaomiMusicAdSkip-debug
         path: app/build/outputs/apk/debug/*.apk
         retention-days: 90

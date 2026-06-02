@@ -19,7 +19,7 @@ public class MainActivity extends Activity {
         layout.setBackgroundColor(Color.parseColor("#1a1a2e"));
 
         TextView title = new TextView(this);
-        title.setText("TaskBypass");
+        title.setText("小米音乐去广告");
         title.setTextSize(28);
         title.setTextColor(Color.parseColor("#e94560"));
         title.setGravity(Gravity.CENTER);
@@ -34,15 +34,15 @@ public class MainActivity extends Activity {
 
         TextView desc = new TextView(this);
         desc.setText("功能说明：\n\n"
-            + "  拦截小米音乐任务API响应\n"
-            + "  自动将任务状态改为可领取\n"
+            + "  跳过广告倒计时，立即领取金币\n"
             + "  无需手动修改系统时间\n\n"
             + "使用方法：\n"
             + "1. 在LSPosed中启用本模块\n"
             + "2. 勾选 com.miui.player\n"
             + "3. 重启小米音乐\n"
-            + "4. 点击去浏览 → 跳转外部App → 返回\n"
-            + "5. 任务自动变为「去领取」");
+            + "4. 进入金币中心\n"
+            + "5. 点击「看广告领金币」\n"
+            + "6. 广告加载后立即获得金币");
         desc.setTextSize(16);
         desc.setTextColor(Color.parseColor("#aaaaaa"));
         desc.setGravity(Gravity.CENTER);

@@ -6,23 +6,13 @@
         android:label="@string/app_name"
         android:allowBackup="false">
 
-        <activity
-            android:name=".MainActivity"
-            android:exported="true"
-            android:label="@string/app_name">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
-
         <!-- Xposed模块元数据 -->
         <meta-data
             android:name="xposedmodule"
             android:value="true" />
         <meta-data
             android:name="xposeddescription"
-            android:value="绕过小米音乐(QQ音乐)次日任务时间校验，从外部返回后自动将时间往前拨3分钟" />
+            android:value="小米音乐看广告领金币自动化 - 跳过广告倒计时，立即领取金币" />
         <meta-data
             android:name="xposedminversion"
             android:value="82" />
